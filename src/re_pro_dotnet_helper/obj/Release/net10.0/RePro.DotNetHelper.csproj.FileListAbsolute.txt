@@ -1,0 +1,16 @@
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\RePro.DotNetHelper.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\RePro.DotNetHelper.AssemblyInfoInputs.cache
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\RePro.DotNetHelper.AssemblyInfo.cs
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\RePro.DotNetHelper.csproj.CoreCompileInputs.cache
+C:\Users\josep\OneDrive\Documents\RE-Pro\tools\dotnet_helper\RePro.DotNetHelper.exe
+C:\Users\josep\OneDrive\Documents\RE-Pro\tools\dotnet_helper\RePro.DotNetHelper.deps.json
+C:\Users\josep\OneDrive\Documents\RE-Pro\tools\dotnet_helper\RePro.DotNetHelper.runtimeconfig.json
+C:\Users\josep\OneDrive\Documents\RE-Pro\tools\dotnet_helper\RePro.DotNetHelper.dll
+C:\Users\josep\OneDrive\Documents\RE-Pro\tools\dotnet_helper\RePro.DotNetHelper.pdb
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\RePro.DotNetHelper.dll
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\refint\RePro.DotNetHelper.dll
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\RePro.DotNetHelper.pdb
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\RePro.DotNetHelper.genruntimeconfig.cache
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\ref\RePro.DotNetHelper.dll
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\RePro.DotNetHelper.csproj.AssemblyReference.cache
+C:\Users\josep\OneDrive\Documents\RE-Pro\src\re_pro_dotnet_helper\obj\Release\net10.0\RePro.Do.89FA89DE.Up2Date

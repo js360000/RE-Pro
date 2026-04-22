@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "re-pro"
+version = "0.1.0"
+description = "Reverse-engineering workbench for executable analysis, recovery, and decompilation orchestration."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "Brotli>=1.1",
+  "capstone>=5.0",
+  "openai>=1.0",
+  "PyQt5>=5.15",
+]
+
+[project.scripts]
+re-pro = "re_pro.cli:main"
+re-pro-gui = "re_pro.gui:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

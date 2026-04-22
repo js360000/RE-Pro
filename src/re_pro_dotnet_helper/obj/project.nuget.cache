@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "zgUQ13OVT/8=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\josep\\OneDrive\\Documents\\RE-Pro\\src\\re_pro_dotnet_helper\\RePro.DotNetHelper.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\josep\\.nuget\\packages\\icsharpcode.bamldecompiler\\10.0.0.8330\\icsharpcode.bamldecompiler.10.0.0.8330.nupkg.sha512",
+    "C:\\Users\\josep\\.nuget\\packages\\icsharpcode.decompiler\\10.0.0.8330\\icsharpcode.decompiler.10.0.0.8330.nupkg.sha512"
+  ],
+  "logs": []
+}

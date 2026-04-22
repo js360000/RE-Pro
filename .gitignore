@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Local tools and helper builds
+tools/
+
+# Analysis outputs
+analysis_output/
+opencode_7z_extract/
+sample_analysis*/
+samples_analysis*/
+samples_real_analysis*/
+z-code-analysis_output/
+z-code-MAIN-analysis_output*/
+smoke_output*/
+tool_validation_output/
+
+# Temp / probe directories
+tmp_*/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

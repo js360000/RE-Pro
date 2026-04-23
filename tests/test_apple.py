@@ -123,6 +123,81 @@ class AppleAnalyzerTests(unittest.TestCase):
             self.assertEqual(len(report.recovered_sources), 1)
             self.assertTrue(any("bundle_id=com.example.iossample" in note for note in report.notes))
 
+    def test_ipa_analysis_records_provisioning_entitlements_and_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ipa_path = root / "Sample.ipa"
+            header = bytearray(32)
+            header[0:4] = b"\xcf\xfa\xed\xfe"
+            struct.pack_into("<iiIIII", header, 4, 0x0100000C, 0, 2, 8, 256, 0x2000)
+            mobileprovision = (
+                b"prefix"
+                + plistlib.dumps(
+                    {
+                        "Name": "Demo Profile",
+                        "UUID": "1234-5678",
+                        "TeamName": "Example Team",
+                        "TeamIdentifier": ["TEAM123"],
+                        "ProvisionedDevices": ["device-1", "device-2"],
+                        "Entitlements": {
+                            "application-identifier": "TEAM123.com.example.iossample",
+                            "aps-environment": "development",
+                            "get-task-allow": True,
+                            "com.apple.developer.team-identifier": "TEAM123",
+                        },
+                    }
+                )
+                + b"suffix"
+            )
+            with zipfile.ZipFile(ipa_path, "w") as archive:
+                archive.writestr(
+                    "Payload/Sample.app/Info.plist",
+                    plistlib.dumps(
+                        {
+                            "CFBundleIdentifier": "com.example.iossample",
+                            "CFBundleName": "Sample iOS",
+                            "CFBundleExecutable": "Sample",
+                        }
+                    ),
+                )
+                archive.writestr("Payload/Sample.app/Sample", bytes(header))
+                archive.writestr("Payload/Sample.app/embedded.mobileprovision", mobileprovision)
+                archive.writestr(
+                    "Payload/Sample.app/Sample.xcent",
+                    plistlib.dumps(
+                        {
+                            "application-identifier": "TEAM123.com.example.iossample",
+                            "aps-environment": "development",
+                            "get-task-allow": True,
+                        }
+                    ),
+                )
+                archive.writestr("Payload/Sample.app/Frameworks/UnityFramework.framework/UnityFramework", b"\x00")
+                archive.writestr("Payload/Sample.app/Frameworks/Hermes.framework/Hermes", b"\x00")
+                archive.writestr("Payload/Sample.app/Frameworks/libswiftCore.dylib", b"\x00")
+                archive.writestr(
+                    "Payload/Sample.app/PlugIns/Share.appex/Info.plist",
+                    plistlib.dumps(
+                        {
+                            "CFBundleIdentifier": "com.example.iossample.share",
+                            "NSExtension": {
+                                "NSExtensionPointIdentifier": "com.apple.share-services",
+                            },
+                        }
+                    ),
+                )
+            engine = ReverseEngineeringEngine(output_root=root / "out")
+
+            report = engine.analyze(ipa_path)
+
+            self.assertIn("iOS framework: Unity", report.frameworks)
+            self.assertIn("iOS framework: React Native", report.frameworks)
+            self.assertIn("iOS language/runtime: Swift", report.frameworks)
+            self.assertIn("iOS app extensions", report.frameworks)
+            self.assertTrue(any("Provisioning profile:" in note for note in report.notes))
+            self.assertTrue(any("Provisioned entitlements:" in note for note in report.notes))
+            self.assertTrue(any("Recovered 1 iOS extension bundle(s)." in note for note in report.notes))
+
     def test_app_bundle_restores_sources_from_extracted_asar(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

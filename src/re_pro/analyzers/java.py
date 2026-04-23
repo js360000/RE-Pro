@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import zipfile
 from pathlib import Path
 
 from ..sourcemap import restore_sources_from_map
+from ..tooling import resolve_command, run_command_logged
 from ..utils import ensure_dir
 from .base import Analyzer
 
@@ -59,6 +61,7 @@ class JavaPackageAnalyzer(Analyzer):
         self._record_web_artifacts(extract_dir, report)
         self._restore_source_maps(extract_dir, report)
         self._index_java_archive(context, members, class_files, manifest_path if manifest_path.exists() else None)
+        self._run_archive_decompiler(context.target, suffix, extract_dir, report, context)
 
     @staticmethod
     def _archive_identity(suffix: str) -> tuple[str, str]:
@@ -179,3 +182,79 @@ class JavaPackageAnalyzer(Analyzer):
                 attributes={"path": str(manifest_path), "category": "manifest"},
             )
             context.analysis_index.add_relation(target_id, "produced_artifact", manifest_id)
+
+    def _run_archive_decompiler(self, archive_path: Path, suffix: str, extract_dir: Path, report, context) -> None:
+        jadx_command = resolve_command([["jadx"], ["jadx.bat"]])
+        if not context.run_external_tools:
+            if jadx_command is not None and suffix in {".jar", ".aar"}:
+                report.add_note("jadx is installed locally but skipped for this run. Enable external tools for Java/AAR bytecode decompilation.")
+            return
+        if jadx_command is None or suffix not in {".jar", ".aar"}:
+            return
+
+        input_target = archive_path
+        if suffix == ".aar":
+            classes_jar = extract_dir / "classes.jar"
+            if classes_jar.exists():
+                input_target = classes_jar
+                report.add_artifact(str(classes_jar), "payload", "Recovered Android library classes.jar")
+            else:
+                report.add_note("AAR decompilation skipped because classes.jar was not present in the archive.")
+                return
+
+        output_dir = ensure_dir(context.output_dir / "jadx_java")
+        source_output_dir = ensure_dir(output_dir / "sources")
+        log_path = output_dir / "jadx.log"
+        command = jadx_command + ["--no-res", "-j", str(self._parallel_jobs()), "-ds", str(source_output_dir), str(input_target)]
+        report.add_artifact(str(log_path), "log", "jadx Java archive decompiler log")
+        code, stdout, stderr = run_command_logged(
+            command,
+            cwd=input_target.parent,
+            timeout=1800,
+            logger=self._make_step_logger(log_path, context),
+            label="jadx-java",
+        )
+        java_files = list(source_output_dir.rglob("*.java"))
+        kotlin_files = list(source_output_dir.rglob("*.kt"))
+        if code == 0 and (java_files or kotlin_files):
+            report.add_artifact(str(output_dir), "directory", "jadx decompiled Java archive sources")
+            report.add_finding(
+                "jadx Java archive decompilation succeeded",
+                f"jadx recovered {len(java_files)} Java files and {len(kotlin_files)} Kotlin files from {input_target.name}.",
+                severity="info",
+            )
+            self._index_decompiled_archive(context, source_output_dir)
+            return
+        message = stderr.strip() or stdout.strip()
+        if message:
+            report.add_note(f"jadx Java archive decompilation failed: {message}")
+
+    @staticmethod
+    def _index_decompiled_archive(context, source_output_dir: Path) -> None:
+        target_id = context.analysis_index.make_id("target", str(context.target))
+        for source_file in list(source_output_dir.rglob("*.java"))[:300] + list(source_output_dir.rglob("*.kt"))[:300]:
+            relative_path = source_file.relative_to(source_output_dir)
+            source_id = context.analysis_index.add_entity(
+                "decompiled_source",
+                str(relative_path).lower(),
+                source_file.name,
+                attributes={"path": str(source_file), "relative_path": str(relative_path)},
+            )
+            context.analysis_index.add_relation(target_id, "decompiled_to_source", source_id)
+
+    @staticmethod
+    def _parallel_jobs(*, max_jobs: int = 8) -> int:
+        cpu_total = os.cpu_count() or 4
+        return max(2, min(cpu_total, max_jobs))
+
+    @staticmethod
+    def _make_step_logger(log_path: Path, context):
+        ensure_dir(log_path.parent)
+        log_path.write_text("", encoding="utf-8")
+
+        def _logger(message: str) -> None:
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(message + "\n")
+            context.log(message)
+
+        return _logger

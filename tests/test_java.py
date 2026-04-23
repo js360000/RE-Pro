@@ -5,10 +5,14 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from tests import _path_setup  # noqa: F401
 
+from re_pro.analyzers.java import JavaPackageAnalyzer
 from re_pro.engine import ReverseEngineeringEngine
+from re_pro.engine import AnalysisContext
+from re_pro.models import AnalysisReport
 
 
 class JavaAnalyzerTests(unittest.TestCase):
@@ -52,6 +56,34 @@ class JavaAnalyzerTests(unittest.TestCase):
             self.assertTrue(
                 any(entity["kind"] == "java_class" and entity["label"] == "Main" for entity in payload["entities"])
             )
+
+    def test_jar_external_jadx_runs_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            jar_path = root / "demo.jar"
+            with zipfile.ZipFile(jar_path, "w") as archive:
+                archive.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nMain-Class: com.example.Main\n")
+                archive.writestr("com/example/Main.class", b"\xca\xfe\xba\xbe")
+
+            report = AnalysisReport(target=str(jar_path), output_dir=str(root / "out"))
+            context = AnalysisContext(
+                target=jar_path,
+                output_dir=root / "out",
+                run_external_tools=True,
+            )
+
+            def fake_run_command(command, *, cwd=None, timeout=300, logger=None, label=None, heartbeat_seconds=15):
+                output_dir = context.output_dir / "jadx_java" / "sources" / "com" / "example"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / "Main.java").write_text("class Main {}", encoding="utf-8")
+                return 0, "jadx", ""
+
+            with patch("re_pro.analyzers.java.resolve_command", return_value=[str(root / "tools" / "jadx" / "bin" / "jadx.bat")]):
+                with patch("re_pro.analyzers.java.run_command_logged", side_effect=fake_run_command):
+                    JavaPackageAnalyzer().analyze(context, report)
+
+            self.assertTrue(any(finding.title == "jadx Java archive decompilation succeeded" for finding in report.findings))
+            self.assertTrue(any(artifact.description == "jadx decompiled Java archive sources" for artifact in report.artifacts))
 
 
 if __name__ == "__main__":

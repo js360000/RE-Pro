@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import zipfile
 from pathlib import Path
 
@@ -110,6 +111,7 @@ class AppleAnalyzer(Analyzer):
     def _analyze_ios_app_bundle(self, bundle_dir: Path, report, context) -> None:
         info_path = bundle_dir / "Info.plist"
         frameworks_dir = bundle_dir / "Frameworks"
+        plugins_dir = bundle_dir / "PlugIns"
 
         report.target_type = "ios-app-bundle"
         report.add_framework("iOS app bundle (.app)")
@@ -157,10 +159,10 @@ class AppleAnalyzer(Analyzer):
             self._run_macos_external_tools(executable_path, report, context)
 
         if frameworks_dir.exists():
-            if any(path.name.startswith("Flutter.framework") for path in frameworks_dir.iterdir()):
-                report.add_framework("iOS framework: Flutter")
-            if any(path.name.startswith("React") or path.name.startswith("Hermes") for path in frameworks_dir.iterdir()):
-                report.add_framework("iOS framework: React Native")
+            self._record_ios_framework_hints(frameworks_dir, report)
+        self._record_ios_signing_metadata(bundle_dir, report)
+        if plugins_dir.exists():
+            self._record_ios_extensions(plugins_dir, report)
 
         self._inspect_ios_resources(bundle_dir, report, context, strings)
 
@@ -488,6 +490,125 @@ class AppleAnalyzer(Analyzer):
         version = payload.get("version")
         if name or version:
             report.add_note(f"package.json name={name or 'unknown'} version={version or 'unknown'}.")
+
+    @staticmethod
+    def _record_ios_framework_hints(frameworks_dir: Path, report) -> None:
+        framework_names = [path.name for path in frameworks_dir.iterdir()]
+        if any(name.startswith("Flutter.framework") for name in framework_names):
+            report.add_framework("iOS framework: Flutter")
+        if any(name.startswith("React") or name.startswith("Hermes") for name in framework_names):
+            report.add_framework("iOS framework: React Native")
+        if any(name.startswith("UnityFramework.framework") for name in framework_names):
+            report.add_framework("iOS framework: Unity")
+        if any(name.startswith("libswift") or name.endswith(".swiftmodule") for name in framework_names):
+            report.add_framework("iOS language/runtime: Swift")
+
+    def _record_ios_signing_metadata(self, bundle_dir: Path, report) -> None:
+        mobileprovision_path = bundle_dir / "embedded.mobileprovision"
+        if mobileprovision_path.exists():
+            report.add_artifact(str(mobileprovision_path), "manifest", "iOS embedded provisioning profile")
+            payload = self._parse_mobileprovision(mobileprovision_path)
+            if payload:
+                name = payload.get("Name")
+                team_name = payload.get("TeamName")
+                uuid = payload.get("UUID")
+                expiration = payload.get("ExpirationDate")
+                team_ids = payload.get("TeamIdentifier") or []
+                if isinstance(team_ids, str):
+                    team_ids = [team_ids]
+                report.add_note(
+                    "Provisioning profile: "
+                    + ", ".join(
+                        part
+                        for part in (
+                            f"name={name}" if name else "",
+                            f"team={team_name}" if team_name else "",
+                            f"uuid={uuid}" if uuid else "",
+                            f"expires={expiration}" if expiration else "",
+                            f"team_ids={','.join(team_ids)}" if team_ids else "",
+                        )
+                        if part
+                    )
+                )
+                device_count = len(payload.get("ProvisionedDevices") or [])
+                if device_count:
+                    report.add_note(f"Provisioning profile includes {device_count} provisioned device(s).")
+                entitlements = payload.get("Entitlements")
+                if isinstance(entitlements, dict):
+                    self._record_entitlements_summary(entitlements, report, "Provisioned entitlements")
+
+        for xcent_path in sorted(bundle_dir.glob("*.xcent")):
+            payload = parse_plist(xcent_path)
+            if isinstance(payload, dict):
+                report.add_artifact(str(xcent_path), "manifest", "iOS entitlements (.xcent)")
+                self._record_entitlements_summary(payload, report, f"Entitlements {xcent_path.name}")
+
+    def _record_ios_extensions(self, plugins_dir: Path, report) -> None:
+        appex_dirs = sorted(path for path in plugins_dir.glob("*.appex") if path.is_dir())
+        if not appex_dirs:
+            return
+        report.add_framework("iOS app extensions")
+        report.add_note(f"Recovered {len(appex_dirs)} iOS extension bundle(s).")
+        for appex_dir in appex_dirs[:12]:
+            report.add_artifact(str(appex_dir), "directory", f"iOS extension bundle: {appex_dir.name}")
+            info = parse_plist(appex_dir / "Info.plist")
+            if not isinstance(info, dict):
+                continue
+            bundle_id = info.get("CFBundleIdentifier")
+            extension = info.get("NSExtension")
+            extension_point = extension.get("NSExtensionPointIdentifier") if isinstance(extension, dict) else None
+            if bundle_id or extension_point:
+                report.add_note(
+                    "iOS extension: "
+                    + ", ".join(
+                        part
+                        for part in (
+                            f"bundle_id={bundle_id}" if bundle_id else "",
+                            f"point={extension_point}" if extension_point else "",
+                        )
+                        if part
+                    )
+                )
+
+    @staticmethod
+    def _record_entitlements_summary(payload: dict[str, object], report, label: str) -> None:
+        application_identifier = payload.get("application-identifier")
+        aps_environment = payload.get("aps-environment")
+        get_task_allow = payload.get("get-task-allow")
+        team_identifier = payload.get("com.apple.developer.team-identifier")
+        values = [
+            f"application_identifier={application_identifier}" if application_identifier else "",
+            f"aps_environment={aps_environment}" if aps_environment else "",
+            f"get_task_allow={get_task_allow}" if get_task_allow is not None else "",
+            f"team_identifier={team_identifier}" if team_identifier else "",
+        ]
+        rendered = ", ".join(value for value in values if value)
+        if rendered:
+            report.add_note(f"{label}: {rendered}")
+
+    @staticmethod
+    def _parse_mobileprovision(path: Path) -> dict[str, object] | None:
+        try:
+            payload = path.read_bytes()
+        except OSError:
+            return None
+        xml_start = payload.find(b"<?xml")
+        xml_end = payload.find(b"</plist>")
+        if xml_start != -1 and xml_end != -1:
+            xml_payload = payload[xml_start : xml_end + len(b"</plist>")]
+            try:
+                parsed = plistlib.loads(xml_payload)
+            except (plistlib.InvalidFileException, ValueError):
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        binary_start = payload.find(b"bplist00")
+        if binary_start != -1:
+            try:
+                parsed = plistlib.loads(payload[binary_start:])
+            except (plistlib.InvalidFileException, ValueError):
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
 
     @staticmethod
     def _capture_output(command: list[str], destination: Path, category: str, description: str, report, context) -> bool:

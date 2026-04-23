@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+from ..android_resources import parse_resources_arsc
 from ..dex import is_dex_file, parse_dex_metadata
 from ..sourcemap import restore_sources_from_map
 from ..tooling import REPO_ROOT
@@ -28,6 +29,9 @@ class AndroidAnalyzer(Analyzer):
             return
 
         suffix = context.target.suffix.lower()
+        if suffix == ".arsc" or context.target.name.lower() == "resources.arsc":
+            self._analyze_resource_table(context.target, report, context)
+            return
         if suffix == ".dex" or is_dex_file(context.target):
             self._analyze_raw_dex(context.target, report, context)
             return
@@ -77,6 +81,28 @@ class AndroidAnalyzer(Analyzer):
         self._index_raw_dex(context, metadata, metadata_path)
         if context.run_external_tools:
             self._run_jadx_on_bytecode(target, report, context)
+
+    def _analyze_resource_table(self, target: Path, report, context) -> None:
+        metadata = parse_resources_arsc(target)
+        if metadata is None:
+            return
+
+        report.target_type = "android-resource-table"
+        report.add_framework("Android resource table (.arsc)")
+        metadata_path = context.output_dir / "resources_arsc_metadata.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        report.add_artifact(str(target), "binary", "Android compiled resource table")
+        report.add_artifact(str(metadata_path), "metadata", "Android resource table metadata")
+        package_names = metadata.get("package_names") or []
+        if package_names:
+            report.add_note(f"Android resource packages: {', '.join(package_names[:10])}")
+        report.add_finding(
+            "Android resource table parsed",
+            "RE-Pro parsed the compiled Android resource table and recovered package identifiers.",
+            severity="info",
+            details=f"package_count={metadata.get('package_count', 0)}",
+        )
+        self._index_resource_table(context, metadata, metadata_path)
 
     def _analyze_app_bundle(self, target: Path, report, context) -> None:
         extracted_dir = ensure_dir(context.output_dir / "aab_extract")
@@ -140,8 +166,20 @@ class AndroidAnalyzer(Analyzer):
             report.add_artifact(str(manifest_path), "manifest", "Android manifest")
             self._record_manifest(manifest_path, report)
 
-        if (extracted_dir / "resources.arsc").exists():
-            report.add_note("resources.arsc is present; resource names may require APK-specific tooling when the manifest is binary AXML.")
+        resources_arsc = extracted_dir / "resources.arsc"
+        if resources_arsc.exists():
+            report.add_artifact(str(resources_arsc), "binary", "Android compiled resource table")
+            arsc_metadata = parse_resources_arsc(resources_arsc)
+            if arsc_metadata:
+                metadata_path = context.output_dir / "resources_arsc_metadata.json"
+                metadata_path.write_text(json.dumps(arsc_metadata, indent=2), encoding="utf-8")
+                report.add_artifact(str(metadata_path), "metadata", "Android resource table metadata")
+                package_names = arsc_metadata.get("package_names") or []
+                if package_names:
+                    report.add_note(f"Android resource packages: {', '.join(package_names[:10])}")
+                self._index_resource_table(context, arsc_metadata, metadata_path)
+            else:
+                report.add_note("resources.arsc is present; resource names may require APK-specific tooling when the manifest is binary AXML.")
 
         self._record_android_frameworks(extracted_dir, report)
 
@@ -561,3 +599,36 @@ class AndroidAnalyzer(Analyzer):
                 attributes={"descriptor": class_descriptor},
             )
             context.analysis_index.add_relation(target_id, "contains_class", class_id)
+
+    @staticmethod
+    def _index_resource_table(context, metadata: dict[str, object], metadata_path: Path) -> None:
+        target_id = context.analysis_index.make_id("target", str(context.target))
+        resource_table_id = context.analysis_index.add_entity(
+            "format",
+            f"arsc:{context.target.name}",
+            "Android resource table",
+            attributes={
+                "package_count": metadata.get("package_count"),
+                "chunk_count": metadata.get("chunk_count"),
+                "package_names": metadata.get("package_names") or [],
+            },
+        )
+        context.analysis_index.add_relation(target_id, "has_format", resource_table_id)
+        artifact_id = context.analysis_index.add_entity(
+            "artifact",
+            str(metadata_path),
+            metadata_path.name,
+            attributes={"path": str(metadata_path), "category": "metadata"},
+        )
+        context.analysis_index.add_relation(target_id, "produced_artifact", artifact_id)
+        for package in metadata.get("packages") or []:
+            package_name = str(package.get("name") or "").strip()
+            if not package_name:
+                continue
+            package_id = context.analysis_index.add_entity(
+                "android_package",
+                package_name.lower(),
+                package_name,
+                attributes=package,
+            )
+            context.analysis_index.add_relation(target_id, "contains_package", package_id)

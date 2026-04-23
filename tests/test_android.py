@@ -18,6 +18,19 @@ from re_pro.models import AnalysisReport
 
 
 class AndroidAnalyzerTests(unittest.TestCase):
+    def test_standalone_resources_arsc_analysis_recovers_package_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            arsc_path = root / "resources.arsc"
+            arsc_path.write_bytes(_build_test_arsc("com.example.resources"))
+
+            engine = ReverseEngineeringEngine(output_root=root / "out")
+            report = engine.analyze(arsc_path)
+
+            self.assertEqual(report.target_type, "android-resource-table")
+            self.assertIn("Android resource table (.arsc)", report.frameworks)
+            self.assertTrue(any("Android resource packages: com.example.resources" in note for note in report.notes))
+
     def test_parse_standalone_dex_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             dex_path = Path(temp_dir) / "classes.dex"
@@ -246,3 +259,18 @@ def _build_test_dex() -> bytes:
     struct.pack_into("<I", header, class_defs_off, 0)
     header[base_string_data_off : base_string_data_off + len(string_data)] = string_data
     return bytes(header)
+
+
+def _build_test_arsc(package_name: str) -> bytes:
+    package_chunk_size = 0x120
+    total_size = 12 + package_chunk_size
+    data = bytearray(total_size)
+    struct.pack_into("<HHI", data, 0, 0x0002, 12, total_size)
+    struct.pack_into("<I", data, 8, 1)
+
+    chunk_offset = 12
+    struct.pack_into("<HHI", data, chunk_offset, 0x0200, 0x0120, package_chunk_size)
+    struct.pack_into("<I", data, chunk_offset + 8, 0x7F)
+    encoded_name = package_name.encode("utf-16le")
+    data[chunk_offset + 12 : chunk_offset + 12 + len(encoded_name)] = encoded_name
+    return bytes(data)

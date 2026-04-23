@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import tempfile
 import unittest
 import zipfile
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 from tests import _path_setup  # noqa: F401
 
+from re_pro.dex import parse_dex_metadata
 from re_pro.engine import ReverseEngineeringEngine
 from re_pro.analyzers.android import AndroidAnalyzer
 from re_pro.engine import AnalysisContext
@@ -16,6 +18,47 @@ from re_pro.models import AnalysisReport
 
 
 class AndroidAnalyzerTests(unittest.TestCase):
+    def test_parse_standalone_dex_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dex_path = Path(temp_dir) / "classes.dex"
+            dex_path.write_bytes(_build_test_dex())
+            metadata = parse_dex_metadata(dex_path)
+            self.assertIsNotNone(metadata)
+            assert metadata is not None
+            self.assertEqual(metadata["version"], "035")
+            self.assertIn("Lcom/example/Main;", metadata["class_descriptors"])
+
+    def test_raw_dex_analysis_records_classes_and_runs_jadx(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dex_path = root / "classes.dex"
+            dex_path.write_bytes(_build_test_dex())
+            report = AnalysisReport(target=str(dex_path), output_dir=str(root / "out"))
+            context = AnalysisContext(
+                target=dex_path,
+                output_dir=root / "out",
+                probable_binary=True,
+                run_external_tools=True,
+                binary_head=dex_path.read_bytes()[:1024],
+            )
+
+            def fake_run_command(command, *, cwd=None, timeout=300, logger=None, label=None, heartbeat_seconds=15):
+                if "jadx" in " ".join(command).lower():
+                    out = context.output_dir / "jadx" / "sources"
+                    out.mkdir(parents=True, exist_ok=True)
+                    (out / "Main.java").write_text("class Main {}", encoding="utf-8")
+                    return 0, "jadx", ""
+                return 1, "", "unexpected"
+
+            with patch("re_pro.analyzers.android.resolve_command", return_value=[str(root / "tools" / "jadx" / "bin" / "jadx.bat")]):
+                with patch("re_pro.analyzers.android.run_command_logged", side_effect=fake_run_command):
+                    AndroidAnalyzer().analyze(context, report)
+
+            self.assertEqual(report.target_type, "android-dex")
+            self.assertIn("Android DEX bytecode", report.frameworks)
+            self.assertTrue(any("DEX package namespaces:" in note for note in report.notes))
+            self.assertTrue(any("jadx decompilation succeeded" == finding.title for finding in report.findings))
+
     def test_apk_analysis_restores_sources_from_assets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -159,3 +202,47 @@ class AndroidAnalyzerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _build_test_dex() -> bytes:
+    strings = [b"Lcom/example/Main;", b"com.example"]
+    string_data = bytearray()
+    string_offsets: list[int] = []
+    base_string_data_off = 112 + len(strings) * 4 + 4 + len(strings) * 4 + 32
+    cursor = base_string_data_off
+    for value in strings:
+        string_offsets.append(cursor)
+        encoded = bytes([len(value)]) + value + b"\x00"
+        string_data.extend(encoded)
+        cursor += len(encoded)
+
+    string_ids_off = 112
+    type_ids_off = string_ids_off + len(strings) * 4
+    class_defs_off = type_ids_off + len(strings) * 4
+    file_size = base_string_data_off + len(string_data)
+
+    header = bytearray(file_size)
+    header[0:8] = b"dex\n035\x00"
+    struct.pack_into("<I", header, 32, file_size)
+    struct.pack_into("<I", header, 36, 112)
+    struct.pack_into("<I", header, 40, 0x12345678)
+    struct.pack_into("<I", header, 56, len(strings))
+    struct.pack_into("<I", header, 60, string_ids_off)
+    struct.pack_into("<I", header, 64, len(strings))
+    struct.pack_into("<I", header, 68, type_ids_off)
+    struct.pack_into("<I", header, 72, 0)
+    struct.pack_into("<I", header, 76, 0)
+    struct.pack_into("<I", header, 80, 0)
+    struct.pack_into("<I", header, 84, 0)
+    struct.pack_into("<I", header, 88, 0)
+    struct.pack_into("<I", header, 92, 0)
+    struct.pack_into("<I", header, 96, 1)
+    struct.pack_into("<I", header, 100, class_defs_off)
+
+    for index, offset in enumerate(string_offsets):
+        struct.pack_into("<I", header, string_ids_off + (index * 4), offset)
+    struct.pack_into("<I", header, type_ids_off, 0)
+    struct.pack_into("<I", header, type_ids_off + 4, 1)
+    struct.pack_into("<I", header, class_defs_off, 0)
+    header[base_string_data_off : base_string_data_off + len(string_data)] = string_data
+    return bytes(header)

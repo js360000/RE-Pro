@@ -17,12 +17,14 @@ RE-Pro is a Python reverse-engineering workbench aimed at packaged applications 
 The current build supports:
 
 - Android package extraction for `.apk`, `.apks`, and `.xapk` archives.
+- Standalone Android DEX bytecode parsing for raw `.dex` files, including strings, class descriptors, package hints, and optional JADX decompilation.
 - Android web-asset/source-map recovery from embedded `assets/` bundles when source maps ship `sourcesContent`.
 - Optional Android manifest/resource decoding through `apktool` when installed.
 - Optional Android DEX decompilation through `jadx` when installed.
 - Java archive extraction for `.jar`, `.war`, `.ear`, and `.aar` packages, including manifest parsing, framework hints, and web source-map recovery from embedded static assets.
 - Linux package extraction for `.AppImage`, raw SquashFS images, and embedded AppImage root filesystems, including SquashFS carving and web source-map recovery from unpacked assets.
 - Apple app bundle (`.app`) inspection with `Info.plist` parsing and Mach-O header detection.
+- iOS `.ipa` extraction with `Payload/*.app` recovery, iOS `Info.plist` parsing, primary Mach-O discovery, and packaged web/source-map restoration from app resources.
 - Apple archive extraction for `.dmg` and `.pkg` through 7-Zip when available.
 - Optional Mach-O header, symbol, and function exports through `llvm-objdump`, `llvm-nm`, `rizin`, and `radare2` when installed.
 - PE metadata inspection.

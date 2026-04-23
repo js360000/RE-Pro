@@ -22,6 +22,9 @@ class AppleAnalyzer(Analyzer):
             return
 
         suffix = target.suffix.lower()
+        if suffix == ".ipa":
+            self._analyze_ipa(target, report, context)
+            return
         if suffix in {".dmg", ".pkg"}:
             self._analyze_archive(target, report, context)
             return
@@ -30,6 +33,25 @@ class AppleAnalyzer(Analyzer):
         if metadata:
             self._record_macho(target, metadata, report)
             self._run_macos_external_tools(target, report, context)
+
+    def _analyze_ipa(self, target: Path, report, context) -> None:
+        extracted_dir = ensure_dir(context.output_dir / "ipa_extract")
+        context.log(f"Extracting iOS IPA {target.name} to {extracted_dir}")
+        with zipfile.ZipFile(target) as archive:
+            archive.extractall(extracted_dir)
+            members = archive.namelist()
+
+        report.target_type = "ios-ipa"
+        report.add_framework("iOS application archive (.ipa)")
+        report.add_artifact(str(extracted_dir), "directory", "Extracted iOS IPA")
+        report.add_note(f"IPA extraction produced {len(members)} archive members.")
+
+        payload_apps = sorted(path for path in (extracted_dir / "Payload").glob("*.app") if path.is_dir()) if (extracted_dir / "Payload").exists() else []
+        if not payload_apps:
+            report.add_note("No iOS app bundle was found under Payload/ inside the IPA.")
+            return
+        report.add_note(f"Recovered {len(payload_apps)} iOS app bundle(s) from the IPA.")
+        self._analyze_ios_app_bundle(payload_apps[0], report, context)
 
     def _analyze_app_bundle(self, bundle_dir: Path, report, context) -> None:
         contents_dir = bundle_dir / "Contents"
@@ -85,6 +107,63 @@ class AppleAnalyzer(Analyzer):
         if resources_dir.exists():
             self._inspect_macos_resources(resources_dir, report, context, strings)
 
+    def _analyze_ios_app_bundle(self, bundle_dir: Path, report, context) -> None:
+        info_path = bundle_dir / "Info.plist"
+        frameworks_dir = bundle_dir / "Frameworks"
+
+        report.target_type = "ios-app-bundle"
+        report.add_framework("iOS app bundle (.app)")
+        report.add_artifact(str(bundle_dir), "directory", "iOS app bundle")
+
+        info = parse_plist(info_path) if info_path.exists() else None
+        executable_path: Path | None = None
+        if info:
+            report.add_artifact(str(info_path), "manifest", "iOS Info.plist")
+            bundle_id = info.get("CFBundleIdentifier")
+            bundle_name = info.get("CFBundleName") or info.get("CFBundleDisplayName")
+            bundle_version = info.get("CFBundleShortVersionString") or info.get("CFBundleVersion")
+            executable_name = info.get("CFBundleExecutable")
+            minimum_os = info.get("MinimumOSVersion")
+            if bundle_id or bundle_name or bundle_version or minimum_os:
+                report.add_note(
+                    "iOS Info.plist: "
+                    + ", ".join(
+                        part
+                        for part in (
+                            f"bundle_id={bundle_id}" if bundle_id else "",
+                            f"name={bundle_name}" if bundle_name else "",
+                            f"version={bundle_version}" if bundle_version else "",
+                            f"minimum_os={minimum_os}" if minimum_os else "",
+                        )
+                        if part
+                    )
+                )
+            if executable_name:
+                executable_path = bundle_dir / str(executable_name)
+        if executable_path is None:
+            executables = sorted(path for path in bundle_dir.iterdir() if path.is_file() and not path.suffix)
+            executable_path = executables[0] if executables else None
+
+        strings: list[str] = []
+        if executable_path and executable_path.exists():
+            report.add_artifact(str(executable_path), "binary", "Primary iOS executable")
+            metadata = parse_macho_metadata(executable_path)
+            if metadata:
+                self._record_macho(executable_path, metadata, report, preserve_target_type=True)
+            try:
+                strings = extract_ascii_strings(executable_path.read_bytes()[:2_000_000])
+            except OSError:
+                strings = []
+            self._run_macos_external_tools(executable_path, report, context)
+
+        if frameworks_dir.exists():
+            if any(path.name.startswith("Flutter.framework") for path in frameworks_dir.iterdir()):
+                report.add_framework("iOS framework: Flutter")
+            if any(path.name.startswith("React") or path.name.startswith("Hermes") for path in frameworks_dir.iterdir()):
+                report.add_framework("iOS framework: React Native")
+
+        self._inspect_ios_resources(bundle_dir, report, context, strings)
+
     def _analyze_archive(self, target: Path, report, context) -> None:
         family = "Apple disk image (.dmg)" if target.suffix.lower() == ".dmg" else "Apple installer package (.pkg)"
         report.add_framework(family)
@@ -137,6 +216,56 @@ class AppleAnalyzer(Analyzer):
                 report.add_artifact(str(package_json), "manifest", "Recovered package.json")
                 self._record_package_metadata(package_json, report)
         map_files = self._collect_files_in_roots(search_roots or [resources_dir], "*.map")
+        self._restore_source_maps(map_files, report, context)
+
+    def _inspect_ios_resources(self, bundle_dir: Path, report, context, strings: list[str]) -> None:
+        search_roots: list[Path] = []
+        for relative in [
+            Path("Resources"),
+            Path("assets"),
+            Path("www"),
+            Path("flutter_assets"),
+        ]:
+            candidate = bundle_dir / relative
+            if candidate.exists():
+                search_roots.append(candidate)
+                report.add_artifact(str(candidate), "directory", f"iOS resource root: {relative.as_posix()}")
+
+        app_dir = bundle_dir / "app"
+        unpacked_dir = bundle_dir / "app.asar.unpacked"
+        asar_path = bundle_dir / "app.asar"
+        if app_dir.exists():
+            search_roots.append(app_dir)
+            report.add_framework("Electron")
+            report.add_artifact(str(app_dir), "directory", "Unpacked Electron iOS app resources")
+        if unpacked_dir.exists():
+            search_roots.append(unpacked_dir)
+            report.add_framework("Electron")
+            report.add_artifact(str(unpacked_dir), "directory", "Electron iOS unpacked asar resources")
+        if asar_path.exists():
+            report.add_framework("Electron")
+            report.add_artifact(str(asar_path), "archive", "Electron iOS app.asar archive")
+            extracted_dir = self._extract_asar(asar_path, context)
+            if extracted_dir:
+                search_roots.append(extracted_dir)
+                report.add_artifact(str(extracted_dir), "directory", "Extracted iOS app.asar contents")
+
+        if any(path.name == "main.jsbundle" for path in bundle_dir.rglob("*")):
+            report.add_framework("iOS framework: React Native")
+        if (bundle_dir / "flutter_assets").exists():
+            report.add_framework("iOS framework: Flutter")
+        if any(value.startswith("/_next/static/") for value in self._collect_embedded_like_paths(bundle_dir)):
+            report.add_framework("Web framework: Next.js")
+        if self._find_first(bundle_dir, "index.html") and any(marker in value.lower() for value in strings for marker in ("__tauri", "tauri://", "wry", "tao::")):
+            report.add_framework("Tauri")
+            report.add_framework("Rust native binary")
+
+        if search_roots:
+            package_json = self._find_first_in_roots(search_roots, "package.json") or self._find_first(bundle_dir, "package.json")
+            if package_json:
+                report.add_artifact(str(package_json), "manifest", "Recovered package.json")
+                self._record_package_metadata(package_json, report)
+        map_files = self._collect_files_in_roots(search_roots or [bundle_dir], "*.map")
         self._restore_source_maps(map_files, report, context)
 
     def _restore_source_maps(self, map_files: list[Path], report, context) -> None:

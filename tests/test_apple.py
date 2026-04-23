@@ -5,6 +5,7 @@ import plistlib
 import struct
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -82,6 +83,45 @@ class AppleAnalyzerTests(unittest.TestCase):
             self.assertEqual(report.target_type, "macos-app-bundle")
             self.assertEqual(len(report.recovered_sources), 1)
             self.assertTrue(any("bundle_id=com.example.sample" in note for note in report.notes))
+
+    def test_ipa_analysis_extracts_ios_app_bundle_and_restores_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ipa_path = root / "Sample.ipa"
+            header = bytearray(32)
+            header[0:4] = b"\xcf\xfa\xed\xfe"
+            struct.pack_into("<iiIIII", header, 4, 0x0100000C, 0, 2, 8, 256, 0x2000)
+            with zipfile.ZipFile(ipa_path, "w") as archive:
+                archive.writestr(
+                    "Payload/Sample.app/Info.plist",
+                    plistlib.dumps(
+                        {
+                            "CFBundleIdentifier": "com.example.iossample",
+                            "CFBundleName": "Sample iOS",
+                            "CFBundleExecutable": "Sample",
+                            "CFBundleShortVersionString": "2.0.0",
+                            "MinimumOSVersion": "16.0",
+                        }
+                    ),
+                )
+                archive.writestr("Payload/Sample.app/Sample", bytes(header) + b"React Native")
+                archive.writestr("Payload/Sample.app/www/app.js.map", json.dumps(
+                    {
+                        "version": 3,
+                        "file": "app.js",
+                        "sources": ["webpack:///src/mobile.ts"],
+                        "sourcesContent": ["export const mobile = true;"],
+                    }
+                ))
+            engine = ReverseEngineeringEngine(output_root=root / "out")
+
+            report = engine.analyze(ipa_path)
+
+            self.assertIn("iOS application archive (.ipa)", report.frameworks)
+            self.assertIn("iOS app bundle (.app)", report.frameworks)
+            self.assertEqual(report.target_type, "ios-app-bundle")
+            self.assertEqual(len(report.recovered_sources), 1)
+            self.assertTrue(any("bundle_id=com.example.iossample" in note for note in report.notes))
 
     def test_app_bundle_restores_sources_from_extracted_asar(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

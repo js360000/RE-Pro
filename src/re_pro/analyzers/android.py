@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+from ..dex import is_dex_file, parse_dex_metadata
 from ..sourcemap import restore_sources_from_map
 from ..tooling import REPO_ROOT
 from ..tooling import resolve_command, resolve_tool_path, run_command_logged
@@ -27,6 +28,9 @@ class AndroidAnalyzer(Analyzer):
             return
 
         suffix = context.target.suffix.lower()
+        if suffix == ".dex" or is_dex_file(context.target):
+            self._analyze_raw_dex(context.target, report, context)
+            return
         if suffix not in {".apk", ".apks", ".xapk", ".aab"}:
             return
         if not zipfile.is_zipfile(context.target):
@@ -40,6 +44,39 @@ class AndroidAnalyzer(Analyzer):
             return
 
         self._analyze_package_set(context.target, report, context)
+
+    def _analyze_raw_dex(self, target: Path, report, context) -> None:
+        metadata = parse_dex_metadata(target)
+        if metadata is None:
+            return
+
+        ensure_dir(context.output_dir)
+        report.target_type = "android-dex"
+        report.add_framework("Android DEX bytecode")
+        metadata_path = context.output_dir / "dex_metadata.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        report.add_artifact(str(metadata_path), "metadata", "DEX metadata")
+        report.add_artifact(str(target), "binary", "Standalone DEX file")
+        report.add_finding(
+            "DEX bytecode parsed",
+            "RE-Pro parsed the DEX header, strings, types, and class descriptors from the standalone bytecode file.",
+            severity="info",
+            details=(
+                f"strings={metadata.get('string_count', 0)}; "
+                f"types={metadata.get('type_count', 0)}; "
+                f"methods={metadata.get('method_count', 0)}; "
+                f"classes={metadata.get('class_count', 0)}"
+            ),
+        )
+        package_names = metadata.get("package_names") or []
+        if package_names:
+            report.add_note(f"DEX package namespaces: {', '.join(package_names[:10])}")
+        class_descriptors = metadata.get("class_descriptors") or []
+        if class_descriptors:
+            report.add_note(f"DEX class descriptors recovered: {', '.join(class_descriptors[:8])}")
+        self._index_raw_dex(context, metadata, metadata_path)
+        if context.run_external_tools:
+            self._run_jadx_on_bytecode(target, report, context)
 
     def _analyze_app_bundle(self, target: Path, report, context) -> None:
         extracted_dir = ensure_dir(context.output_dir / "aab_extract")
@@ -227,6 +264,37 @@ class AndroidAnalyzer(Analyzer):
             self._run_jadx(jadx_command, apk_target, report, context)
         else:
             report.add_note("Install `jadx` to decompile DEX bytecode into Java/Kotlin-like source output.")
+
+    def _run_jadx_on_bytecode(self, bytecode_target: Path, report, context) -> None:
+        jadx_command = resolve_command([["jadx"], ["jadx.bat"]])
+        if jadx_command is None:
+            report.add_note("Install `jadx` to decompile standalone DEX bytecode into Java/Kotlin-like source output.")
+            return
+        output_dir = ensure_dir(context.output_dir / "jadx")
+        source_output_dir = ensure_dir(output_dir / "sources")
+        log_path = output_dir / "jadx.log"
+        full_command = self._build_jadx_command(jadx_command, bytecode_target, source_output_dir, self._parallel_jobs(max_jobs=8))
+        report.add_artifact(str(log_path), "log", "jadx verbose log")
+        code, stdout, stderr = run_command_logged(
+            full_command,
+            cwd=bytecode_target.parent,
+            timeout=1800,
+            logger=self._make_step_logger(log_path, context),
+            label="jadx",
+        )
+        java_files = list(output_dir.rglob("*.java"))
+        kotlin_files = list(output_dir.rglob("*.kt"))
+        if code == 0 and (java_files or kotlin_files):
+            report.add_artifact(str(output_dir), "directory", "jadx decompiled Android bytecode sources")
+            report.add_finding(
+                "jadx decompilation succeeded",
+                f"jadx recovered {len(java_files)} Java files and {len(kotlin_files)} Kotlin files from standalone DEX input.",
+                severity="info",
+            )
+            return
+        message = stderr.strip() or stdout.strip()
+        if message:
+            report.add_note(f"jadx decompilation failed: {message}")
 
     def _run_apktool(self, command: list[str], apk_target: Path, report, context) -> None:
         output_dir = ensure_dir(context.output_dir / "apktool_decode")
@@ -462,3 +530,34 @@ class AndroidAnalyzer(Analyzer):
         version = payload.get("version")
         if name or version:
             report.add_note(f"package.json name={name or 'unknown'} version={version or 'unknown'}.")
+
+    @staticmethod
+    def _index_raw_dex(context, metadata: dict[str, object], metadata_path: Path) -> None:
+        target_id = context.analysis_index.make_id("target", str(context.target))
+        dex_id = context.analysis_index.add_entity(
+            "format",
+            f"dex:{context.target.name}",
+            "DEX bytecode",
+            attributes={
+                "version": metadata.get("version"),
+                "string_count": metadata.get("string_count"),
+                "class_count": metadata.get("class_count"),
+                "method_count": metadata.get("method_count"),
+            },
+        )
+        context.analysis_index.add_relation(target_id, "has_format", dex_id)
+        artifact_id = context.analysis_index.add_entity(
+            "artifact",
+            str(metadata_path),
+            metadata_path.name,
+            attributes={"path": str(metadata_path), "category": "metadata"},
+        )
+        context.analysis_index.add_relation(target_id, "produced_artifact", artifact_id)
+        for class_descriptor in metadata.get("class_descriptors") or []:
+            class_id = context.analysis_index.add_entity(
+                "java_class",
+                str(class_descriptor).lower(),
+                str(class_descriptor),
+                attributes={"descriptor": class_descriptor},
+            )
+            context.analysis_index.add_relation(target_id, "contains_class", class_id)

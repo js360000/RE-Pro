@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RE-Pro | Reverse Engineering Workbench</title>
+  <meta name="description" content="RE-Pro is a cross-platform reverse-engineering workbench for binaries, packages, source recovery, decompilation workflows, reconstruction, and rebuild preparation.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="site-header">
+      <a class="brand" href="#top">
+        <span class="brand-mark">RE</span>
+        <span class="brand-copy">
+          <strong>RE-Pro</strong>
+          <span>Reverse Engineering Workbench</span>
+        </span>
+      </a>
+      <nav class="top-nav">
+        <a href="#capabilities">Capabilities</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#interfaces">Interfaces</a>
+        <a href="#roadmap">Roadmap</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy reveal">
+          <p class="eyebrow">Cross-platform reverse engineering, source recovery, and rebuild prep</p>
+          <h1>Turn opaque binaries into readable evidence, recoverable source, and actionable rebuild workflows.</h1>
+          <p class="hero-text">
+            RE-Pro is a Python-based reverse-engineering platform for packaged desktop, mobile, web, native,
+            managed, and console-style targets. It recovers shipped metadata, restores source from maps and resources,
+            correlates external tool output, and prepares real project workspaces instead of stopping at raw dumps.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#capabilities">Explore Capabilities</a>
+            <a class="button secondary" href="#workflow">See the Workflow</a>
+          </div>
+          <ul class="signal-list">
+            <li>Windows, Android, iOS, macOS, Linux, .NET, Java, WASM, ELF, PE, Mach-O, AppImage, IPA, APK, MSI, CAB, PS2 ELF</li>
+            <li>GUI, CLI, MCP, external tool orchestration, GPT-assisted reconstruction, rebuild and patch workflows</li>
+            <li>Analysis graph, correlation, runtime tracing, source-map recovery, symbols, packaging, and signing support</li>
+          </ul>
+        </div>
+        <div class="hero-visual reveal">
+          <img src="assets/hero.png" alt="RE-Pro hero illustration showing binaries turning into code and structured analysis output.">
+        </div>
+      </section>
+
+      <section class="metrics reveal">
+        <article>
+          <span class="metric-value">Cross-platform</span>
+          <span class="metric-label">Desktop, mobile, console-style, archive, and package analysis in one workflow</span>
+        </article>
+        <article>
+          <span class="metric-value">Graph-driven</span>
+          <span class="metric-label">Artifacts, functions, strings, resources, frameworks, and findings normalized into one index</span>
+        </article>
+        <article>
+          <span class="metric-value">Build-oriented</span>
+          <span class="metric-label">Recovered sources, project templates, signing plans, patch bundles, and recompile workspaces</span>
+        </article>
+      </section>
+
+      <section class="section reveal" id="capabilities">
+        <div class="section-heading">
+          <p class="eyebrow">Why it stands out</p>
+          <h2>Built for recovery, correlation, and execution, not just static dumping.</h2>
+        </div>
+        <div class="card-grid">
+          <article class="card">
+            <h3>Source Recovery First</h3>
+            <p>Recovers original source trees from shipped source maps, Tauri assets, BAML/XAML, package resources, and managed/native metadata where possible.</p>
+          </article>
+          <article class="card">
+            <h3>Real Format Breadth</h3>
+            <p>Handles PE, ELF, Mach-O, WASM, APK, IPA, AppImage, CAB, MSI, JAR, AAR, DEX, .NET bundles, Electron, Tauri, and more.</p>
+          </article>
+          <article class="card">
+            <h3>External Tool Correlation</h3>
+            <p>Ingests and correlates exports from Ghidra, rizin, radare2, ILSpy, JADX, and local symbol tooling into one queryable graph.</p>
+          </article>
+          <article class="card">
+            <h3>Operator Interfaces</h3>
+            <p>Use the PyQt GUI for browsing, the CLI for automation, or MCP to let any connected LLM reason over artifacts and reconstruction workflows.</p>
+          </article>
+          <article class="card">
+            <h3>Runtime and Symbol Workflows</h3>
+            <p>Supports remote PDB acquisition, runtime tracing, Frida hooks, native tool exports, package inspection, and framework-specific heuristics.</p>
+          </article>
+          <article class="card">
+            <h3>Rebuild and Patch Paths</h3>
+            <p>Generates Android Studio, Xcode, Node, Tauri, Electron, and CMake-oriented workspaces with signing plans, patch bundles, and bounded package actions.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section workflow reveal" id="workflow">
+        <div class="section-heading">
+          <p class="eyebrow">Workflow</p>
+          <h2>From target file to reconstructed project with one continuous pipeline.</h2>
+        </div>
+        <div class="timeline">
+          <article>
+            <span>01</span>
+            <h3>Identify</h3>
+            <p>Classify the target, unpack installers and archives, fingerprint frameworks, and discover platform-specific packaging layers.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Extract</h3>
+            <p>Recover manifests, resources, sections, symbols, source maps, managed assets, web bundles, package payloads, and runtime evidence.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>Correlate</h3>
+            <p>Normalize functions, strings, artifacts, frameworks, and tool exports into a unified analysis graph for browsing and automation.</p>
+          </article>
+          <article>
+            <span>04</span>
+            <h3>Reconstruct</h3>
+            <p>Restore original files when possible and optionally invoke GPT-assisted approximation only when the evidence demands it.</p>
+          </article>
+          <article>
+            <span>05</span>
+            <h3>Execute</h3>
+            <p>Move into rebuild templates, package actions, signing flows, patch bundles, and run-to-run diffs instead of ending with a static report.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section reveal" id="interfaces">
+        <div class="section-heading">
+          <p class="eyebrow">Interfaces</p>
+          <h2>Choose the control surface that fits the job.</h2>
+        </div>
+        <div class="interface-grid">
+          <article class="interface-card">
+            <h3>GUI</h3>
+            <p>PyQt5 desktop interface for browsing reports, artifacts, recovered sources, index entities, workflows, and runtime output.</p>
+          </article>
+          <article class="interface-card">
+            <h3>CLI</h3>
+            <p>Scriptable analysis, tool installation, diff generation, patch bundle creation, package actions, and background-friendly runs.</p>
+          </article>
+          <article class="interface-card">
+            <h3>MCP</h3>
+            <p>Expose the whole RE-Pro workflow to external LLM clients so they can inspect evidence, reconstruct files, validate changes, and drive rebuild steps.</p>
+          </article>
+        </div>
+        <div class="command-panel">
+          <pre><code>re-pro analyze path\to\target.exe -o analysis_output
+re-pro compare-runs path\to\base_run path\to\head_run -o diff_output
+re-pro create-patch-bundle path\to\base_run path\to\head_run -o patch_bundle
+re-pro mcp-server --transport stdio</code></pre>
+        </div>
+      </section>
+
+      <section class="section reveal" id="roadmap">
+        <div class="section-heading">
+          <p class="eyebrow">Roadmap</p>
+          <h2>The platform is already broad, but it is clearly being built toward something larger.</h2>
+        </div>
+        <div class="roadmap-copy">
+          <p>
+            RE-Pro is moving beyond analysis into full reconstruction, rebuild, patching, and orchestration.
+            The next major layers are richer package-aware rebuilders, deeper patch application, broader console and engine ecosystems,
+            and more powerful graph-driven automation over the existing MCP and GUI surfaces.
+          </p>
+          <p>
+            In other words: this is not a one-off script collection. It is becoming a proper reverse-engineering platform.
+          </p>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

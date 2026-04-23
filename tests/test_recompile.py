@@ -13,6 +13,31 @@ from re_pro.recompile import apply_patch_bundle, create_recompile_workspace, run
 
 
 class RecompileWorkflowTests(unittest.TestCase):
+    def test_android_rebuild_apk_from_tree_creates_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            metadata = create_recompile_workspace(
+                root,
+                {"target": "app.apk", "target_type": "android-package", "artifacts": [], "recovered_sources": []},
+                ["Android APK"],
+            )
+            workspace_root = Path(metadata["workspace_root"])
+            source_root = workspace_root / "projects" / "android_studio" / "app" / "src" / "main"
+            (source_root / "AndroidManifest.xml").write_text("<manifest package='repro.recovered' />", encoding="utf-8")
+            assets_dir = source_root / "assets"
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            (assets_dir / "app.js").write_text("console.log('hi');", encoding="utf-8")
+
+            result = run_packaging_action(
+                workspace_root=workspace_root,
+                ecosystem="android-gradle",
+                action="rebuild-apk",
+            )
+
+            self.assertTrue(result["ok"])
+            rebuilt = Path(result["rebuilt_artifact"])
+            self.assertTrue(rebuilt.exists())
+
     def test_android_signing_action_prefers_zipalign_then_apksigner(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -86,6 +111,64 @@ class RecompileWorkflowTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(calls[0][-2:], ["run", "package"])
+
+    def test_electron_asar_repack_uses_asar_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            metadata = create_recompile_workspace(
+                root,
+                {"target": "app.exe", "target_type": "portable-executable", "artifacts": [], "recovered_sources": []},
+                ["Electron"],
+            )
+            workspace_root = Path(metadata["workspace_root"])
+            app_root = workspace_root / "projects" / "electron_app" / "resources" / "app"
+            (app_root / "main.js").write_text("console.log('main');", encoding="utf-8")
+            calls: list[list[str]] = []
+
+            def fake_resolve(candidates):
+                executable = candidates[0][0]
+                if executable == "asar":
+                    return [str(root / "node_modules" / ".bin" / "asar.cmd")]
+                return None
+
+            def fake_run(command, *, cwd=None, timeout=300, logger=None, label=None, heartbeat_seconds=15):
+                calls.append(command)
+                return 0, "packed", ""
+
+            with patch("re_pro.recompile.resolve_command", side_effect=fake_resolve):
+                with patch("re_pro.recompile.run_command_logged", side_effect=fake_run):
+                    result = run_packaging_action(
+                        workspace_root=workspace_root,
+                        ecosystem="electron",
+                        action="repack-asar",
+                    )
+
+            self.assertTrue(result["ok"])
+            self.assertIn("asar", calls[0][0].lower())
+            self.assertTrue(str(result["rebuilt_artifact"]).endswith("app.asar"))
+
+    def test_tauri_sidecar_staging_copies_files_into_template(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            metadata = create_recompile_workspace(
+                root,
+                {"target": "app.exe", "target_type": "portable-executable", "artifacts": [], "recovered_sources": []},
+                ["Tauri"],
+            )
+            workspace_root = Path(metadata["workspace_root"])
+            source_sidecars = root / "sidecars"
+            source_sidecars.mkdir()
+            (source_sidecars / "helper.exe").write_bytes(b"helper")
+
+            result = run_packaging_action(
+                workspace_root=workspace_root,
+                ecosystem="tauri",
+                action="stage-sidecars",
+                target_root=str(source_sidecars),
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue((workspace_root / "projects" / "tauri_app" / "src-tauri" / "sidecars" / "helper.exe").exists())
 
     def test_patch_bundle_can_be_created_from_diff_and_applied(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

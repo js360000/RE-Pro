@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ SUPPORTED_TOOLCHAINS = {
     "apksigner": [["apksigner"]],
     "zipalign": [["zipalign"]],
     "jarsigner": [["jarsigner"]],
+    "asar": [["asar"]],
 }
 
 
@@ -339,7 +342,14 @@ def run_packaging_action(
     if ecosystem == "electron":
         return _run_electron_packaging_action(workspace_root=workspace_root, action=action, logger=logger, timeout=timeout)
     if ecosystem == "tauri":
-        return _run_tauri_packaging_action(workspace_root=workspace_root, action=action, logger=logger, timeout=timeout)
+        return _run_tauri_packaging_action(
+            workspace_root=workspace_root,
+            action=action,
+            logger=logger,
+            timeout=timeout,
+            artifact_path=artifact_path,
+            target_root=target_root,
+        )
     if ecosystem == "patch":
         return apply_patch_bundle(
             bundle_root=Path(patch_bundle_path),
@@ -599,6 +609,7 @@ def _create_node_template(template_root: Path, report_dict: dict[str, Any], fram
 
 def _create_electron_template(template_root: Path, report_dict: dict[str, Any], frameworks: list[str]) -> dict[str, Any]:
     ensure_dir(template_root / "src")
+    ensure_dir(template_root / "resources" / "app")
     package_json = template_root / "package.json"
     package_json.write_text(
         json.dumps(
@@ -611,6 +622,7 @@ def _create_electron_template(template_root: Path, report_dict: dict[str, Any], 
                     "start": "electron .",
                     "build": "echo Replace with recovered frontend build command",
                     "package": "echo Replace with electron-builder or forge packaging command",
+                    "repack:asar": "echo Replace with a real asar repack workflow if you want script-driven packaging",
                 },
             },
             indent=2,
@@ -618,14 +630,23 @@ def _create_electron_template(template_root: Path, report_dict: dict[str, Any], 
         encoding="utf-8",
     )
     (template_root / "src" / "main.js").write_text("console.log('Recovered Electron main process placeholder');\n", encoding="utf-8")
+    (template_root / "resources" / "app" / "package.json").write_text(
+        json.dumps({"name": "recovered-electron-app", "version": "0.1.0"}, indent=2),
+        encoding="utf-8",
+    )
     readme = template_root / "README.md"
-    readme.write_text("# Electron Template\n\nReplace placeholder scripts with recovered package/build commands, then use the packaging action to invoke `package` or `build`.\n", encoding="utf-8")
+    readme.write_text(
+        "# Electron Template\n\nReplace placeholder scripts with recovered package/build commands. "
+        "The `resources/app/` tree is the default asar repack root for the package-aware Electron actions.\n",
+        encoding="utf-8",
+    )
     return {"name": "electron_app", "platform": "electron", "path": str(template_root), "readme": str(readme)}
 
 
 def _create_tauri_template(template_root: Path, report_dict: dict[str, Any], frameworks: list[str]) -> dict[str, Any]:
     ensure_dir(template_root / "src")
     ensure_dir(template_root / "src-tauri" / "src")
+    ensure_dir(template_root / "src-tauri" / "sidecars")
     (template_root / "package.json").write_text(
         json.dumps(
             {
@@ -652,7 +673,11 @@ def _create_tauri_template(template_root: Path, report_dict: dict[str, Any], fra
     )
     (template_root / "src-tauri" / "src" / "main.rs").write_text("fn main() {\n    println!(\"Recovered Tauri placeholder\");\n}\n", encoding="utf-8")
     readme = template_root / "README.md"
-    readme.write_text("# Tauri Template\n\nPlace recovered frontend files in `src/` and recovered Rust/native host files in `src-tauri/`, then use the packaging action to invoke `cargo tauri build` or a recovered script.\n", encoding="utf-8")
+    readme.write_text(
+        "# Tauri Template\n\nPlace recovered frontend files in `src/`, recovered Rust/native host files in `src-tauri/`, "
+        "and recovered sidecars in `src-tauri/sidecars/`. Use the package-aware actions to stage sidecars or invoke `cargo tauri build`.\n",
+        encoding="utf-8",
+    )
     return {"name": "tauri_app", "platform": "tauri", "path": str(template_root), "readme": str(readme)}
 
 
@@ -680,6 +705,13 @@ def _run_android_packaging_action(
     logger=None,
     timeout: int,
 ) -> dict[str, Any]:
+    if action == "rebuild-apk":
+        return _rebuild_apk_from_tree(
+            workspace_root=workspace_root,
+            target_root=Path(artifact_path) if artifact_path else workspace_root / "projects" / "android_studio" / "app" / "src" / "main",
+            logger=logger,
+            timeout=timeout,
+        )
     if action == "repack":
         command = _android_gradle_action_command(workspace_root, "assembleDebug")
         if command is None:
@@ -754,6 +786,8 @@ def _run_electron_packaging_action(*, workspace_root: Path, action: str, logger=
     project_root = workspace_root / "projects" / "electron_app"
     if not project_root.exists():
         return {"ok": False, "error": "Electron project template not available"}
+    if action in {"repack-asar", "asar"}:
+        return _repack_electron_asar(project_root, logger=logger, timeout=timeout)
     command = _node_script_command(project_root, preferred_scripts=["package", "dist", "make", "build"])
     if action not in {"repack", "package"} or command is None:
         return {"ok": False, "error": "No suitable Electron packaging script was found"}
@@ -761,10 +795,13 @@ def _run_electron_packaging_action(*, workspace_root: Path, action: str, logger=
     return _command_result(code, stdout, stderr, command)
 
 
-def _run_tauri_packaging_action(*, workspace_root: Path, action: str, logger=None, timeout: int) -> dict[str, Any]:
+def _run_tauri_packaging_action(*, workspace_root: Path, action: str, logger=None, timeout: int, artifact_path: str = "", target_root: str = "") -> dict[str, Any]:
     project_root = workspace_root / "projects" / "tauri_app"
     if not project_root.exists():
         return {"ok": False, "error": "Tauri project template not available"}
+    if action == "stage-sidecars":
+        source_root = Path(target_root) if target_root else Path(artifact_path) if artifact_path else project_root / "dist" / "sidecars"
+        return _stage_tauri_sidecars(project_root, source_root)
     if action not in {"repack", "package", "build"}:
         return {"ok": False, "error": f"Unsupported Tauri packaging action {action}"}
     npm_command = _node_script_command(project_root, preferred_scripts=["tauri", "build"])
@@ -808,6 +845,81 @@ def apply_patch_bundle(*, bundle_root: Path, target_root: Path) -> dict[str, Any
         "bundle_root": str(bundle_root),
         "target_root": str(target_root),
         "applied_operations": applied,
+    }
+
+
+def _rebuild_apk_from_tree(*, workspace_root: Path, target_root: Path, logger=None, timeout: int) -> dict[str, Any]:
+    target_root = target_root.resolve()
+    if not target_root.exists() or not target_root.is_dir():
+        return {"ok": False, "error": f"Android source tree not found: {target_root}"}
+    output_apk = workspace_root / "projects" / "android_studio" / "dist" / "recovered-unsigned.apk"
+    ensure_dir(output_apk.parent)
+    with zipfile.ZipFile(output_apk, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for file_path in sorted(target_root.rglob("*")):
+            if not file_path.is_file():
+                continue
+            relative = file_path.relative_to(target_root).as_posix()
+            archive.write(file_path, relative)
+    result = {
+        "ok": True,
+        "rebuilt_artifact": str(output_apk),
+        "source_root": str(target_root),
+    }
+    zipalign = resolve_command([["zipalign"]])
+    if zipalign is not None:
+        aligned_apk = output_apk.with_name("recovered-aligned.apk")
+        command = zipalign + ["-f", "4", str(output_apk), str(aligned_apk)]
+        code, stdout, stderr = run_command_logged(command, cwd=output_apk.parent, timeout=timeout, logger=logger, label="zipalign-rebuilt-apk")
+        result["zipalign"] = _command_result(code, stdout, stderr, command)
+        if code == 0:
+            result["rebuilt_artifact"] = str(aligned_apk)
+    return result
+
+
+def _repack_electron_asar(project_root: Path, *, logger=None, timeout: int) -> dict[str, Any]:
+    app_root = project_root / "resources" / "app"
+    if not app_root.exists():
+        return {"ok": False, "error": f"Electron app root not found: {app_root}"}
+    output_asar = project_root / "dist" / "app.asar"
+    ensure_dir(output_asar.parent)
+    asar = resolve_command([["asar"]])
+    if asar is not None:
+        command = asar + ["pack", str(app_root), str(output_asar)]
+        code, stdout, stderr = run_command_logged(command, cwd=project_root, timeout=timeout, logger=logger, label="asar-pack")
+        result = _command_result(code, stdout, stderr, command)
+        if code == 0:
+            result["rebuilt_artifact"] = str(output_asar)
+        return result
+
+    zip_fallback = output_asar.with_suffix(".zip")
+    with zipfile.ZipFile(zip_fallback, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for file_path in sorted(app_root.rglob("*")):
+            if file_path.is_file():
+                archive.write(file_path, file_path.relative_to(app_root).as_posix())
+    return {
+        "ok": True,
+        "rebuilt_artifact": str(zip_fallback),
+        "note": "asar was not available; wrote a ZIP fallback containing the staged app tree.",
+    }
+
+
+def _stage_tauri_sidecars(project_root: Path, source_root: Path) -> dict[str, Any]:
+    source_root = source_root.resolve()
+    if not source_root.exists() or not source_root.is_dir():
+        return {"ok": False, "error": f"Sidecar source directory not found: {source_root}"}
+    destination_root = ensure_dir(project_root / "src-tauri" / "sidecars")
+    copied: list[dict[str, str]] = []
+    for file_path in sorted(source_root.rglob("*")):
+        if not file_path.is_file():
+            continue
+        destination = destination_root / file_path.name
+        shutil.copy2(file_path, destination)
+        copied.append({"source": str(file_path), "destination": str(destination)})
+    return {
+        "ok": True,
+        "source_root": str(source_root),
+        "destination_root": str(destination_root),
+        "copied": copied,
     }
 
 

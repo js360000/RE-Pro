@@ -17,7 +17,7 @@ from mcp.types import (
     TextContent,
 )
 
-from .analysis_diff import compare_analysis_runs
+from .analysis_diff import compare_analysis_runs, create_patch_bundle_from_runs
 from .dependency_installer import DependencyInstaller
 from .engine import ReverseEngineeringEngine
 from .plugins import build_analyzers, resolve_plugin_dirs
@@ -25,6 +25,7 @@ from .recompile import (
     create_recompile_workspace,
     detect_toolchains,
     install_dependency,
+    run_packaging_action,
     run_recompile_command,
     validate_reconstruction_file,
 )
@@ -219,6 +220,14 @@ def build_mcp_server(
         return compare_analysis_runs(Path(base_run_output_dir), Path(head_run_output_dir), destination)
 
     @server.tool(
+        name="create_patch_bundle_from_runs",
+        description="Create a resource/source patch bundle from two analysis runs using the diff graph and head-run artifacts.",
+        structured_output=True,
+    )
+    def create_patch_bundle_from_runs_tool(base_run_output_dir: str, head_run_output_dir: str, output_dir: str) -> dict[str, Any]:
+        return create_patch_bundle_from_runs(Path(base_run_output_dir), Path(head_run_output_dir), Path(output_dir))
+
+    @server.tool(
         name="read_report",
         description="Read the JSON report for one analysis run.",
         structured_output=True,
@@ -388,6 +397,39 @@ def build_mcp_server(
             workspace_root=Path(workspace["workspace_root"]),
             ecosystem=ecosystem,
             action=action,
+            logger=state.logger,
+        )
+
+    @server.tool(
+        name="run_packaging_action",
+        description="Run a bounded package rebuild, repack, signing, or patch application action in the run-specific recompile workspace.",
+        structured_output=True,
+    )
+    def run_packaging_action_tool(
+        run_output_dir: str,
+        ecosystem: str,
+        action: str,
+        artifact_path: str = "",
+        keystore_path: str = "",
+        key_alias: str = "",
+        store_pass: str = "",
+        key_pass: str = "",
+        patch_bundle_path: str = "",
+        target_root: str = "",
+    ) -> dict[str, Any]:
+        report = _load_report_dict(Path(run_output_dir))
+        workspace = _prepare_recompile_workspace(Path(run_output_dir), report)
+        return run_packaging_action(
+            workspace_root=Path(workspace["workspace_root"]),
+            ecosystem=ecosystem,
+            action=action,
+            artifact_path=artifact_path,
+            keystore_path=keystore_path,
+            key_alias=key_alias,
+            store_pass=store_pass,
+            key_pass=key_pass,
+            patch_bundle_path=patch_bundle_path,
+            target_root=target_root,
             logger=state.logger,
         )
 

@@ -31,6 +31,8 @@ class McpServerTests(unittest.TestCase):
             self.assertIn("analyze_target", tool_names)
             self.assertIn("approximate_source_with_sampling", tool_names)
             self.assertIn("compare_analysis_runs", tool_names)
+            self.assertIn("create_patch_bundle_from_runs", tool_names)
+            self.assertIn("run_packaging_action", tool_names)
             self.assertIn("repro://capabilities", resource_uris)
             self.assertIn("repro://roadmap", resource_uris)
             self.assertIn("grounded_reconstruction", prompt_names)

@@ -5,13 +5,14 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from .analysis_diff import compare_analysis_runs
+from .analysis_diff import compare_analysis_runs, create_patch_bundle_from_runs
 from .dependency_installer import DependencyInstaller
 from .engine import ReverseEngineeringEngine
 from .llm_assist import run_llm_assist_job
 from .mcp_server import main as mcp_server_main
 from .models import LlmAssistSettings
 from .models import RuntimeTraceSettings
+from .recompile import run_packaging_action
 from .tooling import resolve_command, run_command_logged
 
 
@@ -48,6 +49,23 @@ def build_parser() -> argparse.ArgumentParser:
     compare_runs.add_argument("head_run", help="Head analysis run directory")
     compare_runs.add_argument("-o", "--output", default="", help="Optional output directory for diff artifacts")
     compare_runs.add_argument("--json", action="store_true", help="Print the diff JSON to stdout")
+
+    create_patch_bundle = subparsers.add_parser("create-patch-bundle", help="Create a patch bundle from two analysis runs")
+    create_patch_bundle.add_argument("base_run", help="Base analysis run directory")
+    create_patch_bundle.add_argument("head_run", help="Head analysis run directory")
+    create_patch_bundle.add_argument("-o", "--output", required=True, help="Output directory for the patch bundle")
+
+    package_action = subparsers.add_parser("package-action", help="Run a rebuild, repack, signing, or patch action")
+    package_action.add_argument("--workspace-root", required=True, help="Recompile workspace root")
+    package_action.add_argument("--ecosystem", required=True, help="Packaging ecosystem: android-gradle, electron, tauri, patch")
+    package_action.add_argument("--action", required=True, help="Action name such as repack, sign-apk, or apply-bundle")
+    package_action.add_argument("--artifact-path", default="", help="Artifact path for signing/repacking actions")
+    package_action.add_argument("--keystore-path", default="", help="Keystore path for Android signing")
+    package_action.add_argument("--key-alias", default="", help="Key alias for Android signing")
+    package_action.add_argument("--store-pass", default="", help="Store password for Android signing")
+    package_action.add_argument("--key-pass", default="", help="Key password for Android signing")
+    package_action.add_argument("--patch-bundle-path", default="", help="Patch bundle root for patch actions")
+    package_action.add_argument("--target-root", default="", help="Target root for patch actions")
 
     mcp_server = subparsers.add_parser("mcp-server", help="Run the RE-Pro MCP server")
     mcp_server.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
@@ -116,6 +134,26 @@ def main() -> int:
         else:
             print(f"Analysis diff written to {output_dir}")
         return 0
+    if args.command == "create-patch-bundle":
+        bundle = create_patch_bundle_from_runs(Path(args.base_run), Path(args.head_run), Path(args.output))
+        print(json.dumps(bundle, indent=2))
+        return 0
+    if args.command == "package-action":
+        result = run_packaging_action(
+            workspace_root=Path(args.workspace_root),
+            ecosystem=args.ecosystem,
+            action=args.action,
+            logger=print,
+            artifact_path=args.artifact_path,
+            keystore_path=args.keystore_path,
+            key_alias=args.key_alias,
+            store_pass=args.store_pass,
+            key_pass=args.key_pass,
+            patch_bundle_path=args.patch_bundle_path,
+            target_root=args.target_root,
+        )
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("ok") else 1
     if args.command == "mcp-server":
         mcp_args = [
             "--transport",

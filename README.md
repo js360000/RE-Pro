@@ -52,6 +52,7 @@ The current build supports:
 - Porting-preparation output that copies recovered sources/manifests into a dedicated `porting/` workspace with platform recommendations.
 - Recompile workspaces with detected toolchains and prepared source/manifests for iterative rebuild attempts.
 - Recompile workspaces with generated Android Studio/Xcode/Node/CMake project templates, rebuild plans, signing plans, and patch plans for iterative rebuild attempts.
+- Bounded package actions for Android APK signing/alignment, Electron script-driven repackaging, Tauri packaging, and diff-bundle patch application.
 - Optional GPT-5.4-assisted reconstruction through the OpenAI Responses API, with configurable reasoning effort, verbosity, background execution, operator steering, grounded evidence references, immediate validation hooks, and local tool-driven context inspection.
 - MCP server support over `stdio`, `sse`, and `streamable-http`, exposing RE-Pro analysis, analysis-index search, artifact/source reading, rebuild tooling, and client-sampling-backed approximation workflows to external LLM clients.
 - .NET framework heuristics for WinForms, WPF, Avalonia, MAUI, Unity managed, ASP.NET Core, and Blazor.
@@ -108,6 +109,21 @@ To compare two existing analysis runs and emit a diff bundle:
 
 ```bash
 re-pro compare-runs path\to\base_run path\to\head_run -o diff_output
+```
+
+To create and apply a patch bundle from two runs:
+
+```bash
+re-pro create-patch-bundle path\to\base_run path\to\head_run -o patch_bundle
+re-pro package-action --workspace-root path\to\run\porting\recompile --ecosystem patch --action apply-bundle --patch-bundle-path patch_bundle --target-root path\to\target_root
+```
+
+To run a package rebuild or signing action:
+
+```bash
+re-pro package-action --workspace-root path\to\run\porting\recompile --ecosystem electron --action repack
+re-pro package-action --workspace-root path\to\run\porting\recompile --ecosystem tauri --action repack
+re-pro package-action --workspace-root path\to\run\porting\recompile --ecosystem android-gradle --action sign-apk --artifact-path app.apk --keystore-path debug.keystore --key-alias androiddebugkey
 ```
 
 To load extra local analyzer plugins from another directory:
@@ -209,6 +225,8 @@ The MCP surface exposes:
 - Artifact and recovered-source browsing through `list_artifacts`, `list_recovered_sources`, and `read_output_file`.
 - Rebuild workspace preparation and validation through `prepare_recompile_workspace`, `inspect_toolchains`, `install_project_dependency`, `run_project_command`, `write_reconstruction_file`, and `validate_reconstruction_file`.
 - Run-to-run comparison through `compare_analysis_runs`.
+- Patch-bundle creation through `create_patch_bundle_from_runs`.
+- Package rebuild/signing/patch execution through `run_packaging_action`.
 - A client-side sampling workflow through `approximate_source_with_sampling`, which uses MCP `sampling/createMessage` when the connected client advertises sampling support.
 
 The server also exposes MCP resources and prompts:

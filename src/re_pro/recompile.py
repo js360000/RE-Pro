@@ -17,6 +17,9 @@ SUPPORTED_TOOLCHAINS = {
     "yarn": [["yarn"]],
     "cargo": [["cargo"]],
     "cmake": [["cmake"]],
+    "apksigner": [["apksigner"]],
+    "zipalign": [["zipalign"]],
+    "jarsigner": [["jarsigner"]],
 }
 
 
@@ -83,12 +86,17 @@ def infer_ecosystems(report_dict: dict[str, Any], frameworks: list[str]) -> list
 def generate_project_templates(projects_root: Path, report_dict: dict[str, Any], frameworks: list[str]) -> list[dict[str, Any]]:
     templates: list[dict[str, Any]] = []
     ecosystems = infer_ecosystems(report_dict, frameworks)
+    lower_frameworks = {framework.lower() for framework in frameworks}
     if "android-gradle" in ecosystems:
         templates.append(_create_android_studio_template(projects_root / "android_studio", report_dict, frameworks))
     if "xcode" in ecosystems:
         templates.append(_create_xcode_template(projects_root / "xcode", report_dict, frameworks))
     if "node" in ecosystems:
         templates.append(_create_node_template(projects_root / "node_app", report_dict, frameworks))
+    if any("electron" in framework for framework in lower_frameworks):
+        templates.append(_create_electron_template(projects_root / "electron_app", report_dict, frameworks))
+    if any("tauri" in framework for framework in lower_frameworks):
+        templates.append(_create_tauri_template(projects_root / "tauri_app", report_dict, frameworks))
     if "cmake" in ecosystems:
         templates.append(_create_cmake_template(projects_root / "cmake_app", report_dict, frameworks))
     return templates
@@ -297,6 +305,47 @@ def run_recompile_command(
         return {"ok": False, "error": f"Unsupported action {action} for ecosystem {ecosystem}"}
     code, stdout, stderr = run_command_logged(command, cwd=workspace_root, timeout=timeout, logger=logger, label=f"{ecosystem}-{action}")
     return _command_result(code, stdout, stderr, command)
+
+
+def run_packaging_action(
+    *,
+    workspace_root: Path,
+    ecosystem: str,
+    action: str,
+    logger=None,
+    timeout: int = 1800,
+    artifact_path: str = "",
+    keystore_path: str = "",
+    key_alias: str = "",
+    store_pass: str = "",
+    key_pass: str = "",
+    patch_bundle_path: str = "",
+    target_root: str = "",
+) -> dict[str, Any]:
+    ecosystem = ecosystem.lower()
+    action = action.lower()
+    if ecosystem == "android-gradle":
+        return _run_android_packaging_action(
+            workspace_root=workspace_root,
+            action=action,
+            artifact_path=artifact_path,
+            keystore_path=keystore_path,
+            key_alias=key_alias,
+            store_pass=store_pass,
+            key_pass=key_pass,
+            logger=logger,
+            timeout=timeout,
+        )
+    if ecosystem == "electron":
+        return _run_electron_packaging_action(workspace_root=workspace_root, action=action, logger=logger, timeout=timeout)
+    if ecosystem == "tauri":
+        return _run_tauri_packaging_action(workspace_root=workspace_root, action=action, logger=logger, timeout=timeout)
+    if ecosystem == "patch":
+        return apply_patch_bundle(
+            bundle_root=Path(patch_bundle_path),
+            target_root=Path(target_root),
+        )
+    return {"ok": False, "error": f"Unsupported packaging ecosystem {ecosystem}"}
 
 
 def validate_reconstruction_file(path: Path, *, workspace_root: Path, logger=None, timeout: int = 120) -> dict[str, Any]:
@@ -548,6 +597,65 @@ def _create_node_template(template_root: Path, report_dict: dict[str, Any], fram
     return {"name": "node_app", "platform": "node", "path": str(template_root), "readme": str(readme)}
 
 
+def _create_electron_template(template_root: Path, report_dict: dict[str, Any], frameworks: list[str]) -> dict[str, Any]:
+    ensure_dir(template_root / "src")
+    package_json = template_root / "package.json"
+    package_json.write_text(
+        json.dumps(
+            {
+                "name": "recovered-electron-app",
+                "private": True,
+                "version": "0.1.0",
+                "main": "src/main.js",
+                "scripts": {
+                    "start": "electron .",
+                    "build": "echo Replace with recovered frontend build command",
+                    "package": "echo Replace with electron-builder or forge packaging command",
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (template_root / "src" / "main.js").write_text("console.log('Recovered Electron main process placeholder');\n", encoding="utf-8")
+    readme = template_root / "README.md"
+    readme.write_text("# Electron Template\n\nReplace placeholder scripts with recovered package/build commands, then use the packaging action to invoke `package` or `build`.\n", encoding="utf-8")
+    return {"name": "electron_app", "platform": "electron", "path": str(template_root), "readme": str(readme)}
+
+
+def _create_tauri_template(template_root: Path, report_dict: dict[str, Any], frameworks: list[str]) -> dict[str, Any]:
+    ensure_dir(template_root / "src")
+    ensure_dir(template_root / "src-tauri" / "src")
+    (template_root / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "recovered-tauri-app",
+                "private": True,
+                "version": "0.1.0",
+                "scripts": {
+                    "build": "echo Replace with recovered frontend build command",
+                    "tauri": "cargo tauri",
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (template_root / "src" / "main.js").write_text("console.log('Recovered Tauri frontend placeholder');\n", encoding="utf-8")
+    (template_root / "src-tauri" / "Cargo.toml").write_text(
+        "[package]\nname = \"recovered_tauri_app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        encoding="utf-8",
+    )
+    (template_root / "src-tauri" / "tauri.conf.json").write_text(
+        json.dumps({"package": {"productName": "RecoveredTauriApp", "version": "0.1.0"}}, indent=2),
+        encoding="utf-8",
+    )
+    (template_root / "src-tauri" / "src" / "main.rs").write_text("fn main() {\n    println!(\"Recovered Tauri placeholder\");\n}\n", encoding="utf-8")
+    readme = template_root / "README.md"
+    readme.write_text("# Tauri Template\n\nPlace recovered frontend files in `src/` and recovered Rust/native host files in `src-tauri/`, then use the packaging action to invoke `cargo tauri build` or a recovered script.\n", encoding="utf-8")
+    return {"name": "tauri_app", "platform": "tauri", "path": str(template_root), "readme": str(readme)}
+
+
 def _create_cmake_template(template_root: Path, report_dict: dict[str, Any], frameworks: list[str]) -> dict[str, Any]:
     ensure_dir(template_root / "src")
     (template_root / "CMakeLists.txt").write_text(
@@ -558,6 +666,179 @@ def _create_cmake_template(template_root: Path, report_dict: dict[str, Any], fra
     readme = template_root / "README.md"
     readme.write_text("# CMake Template\n\nReplace `src/main.cpp` with recovered native sources and expand target dependencies incrementally.\n", encoding="utf-8")
     return {"name": "cmake_app", "platform": "native", "path": str(template_root), "readme": str(readme)}
+
+
+def _run_android_packaging_action(
+    *,
+    workspace_root: Path,
+    action: str,
+    artifact_path: str,
+    keystore_path: str,
+    key_alias: str,
+    store_pass: str,
+    key_pass: str,
+    logger=None,
+    timeout: int,
+) -> dict[str, Any]:
+    if action == "repack":
+        command = _android_gradle_action_command(workspace_root, "assembleDebug")
+        if command is None:
+            return {"ok": False, "error": "Android Studio template or gradlew.bat not available"}
+        code, stdout, stderr = run_command_logged(command, cwd=Path(command[0]).parent.parent, timeout=timeout, logger=logger, label="android-repack")
+        return _command_result(code, stdout, stderr, command)
+
+    if action != "sign-apk":
+        return {"ok": False, "error": f"Unsupported Android packaging action {action}"}
+    if not artifact_path or not keystore_path or not key_alias:
+        return {"ok": False, "error": "artifact_path, keystore_path, and key_alias are required for sign-apk"}
+
+    input_apk = Path(artifact_path)
+    ks_path = Path(keystore_path)
+    if not input_apk.exists():
+        return {"ok": False, "error": f"APK not found: {input_apk}"}
+    if not ks_path.exists():
+        return {"ok": False, "error": f"Keystore not found: {ks_path}"}
+
+    aligned_apk = input_apk.parent / f"{input_apk.stem}.aligned{input_apk.suffix}"
+    signed_apk = input_apk.parent / f"{input_apk.stem}.signed{input_apk.suffix}"
+    zipalign = resolve_command([["zipalign"]])
+    if zipalign is not None:
+        align_command = zipalign + ["-f", "4", str(input_apk), str(aligned_apk)]
+        code, stdout, stderr = run_command_logged(align_command, cwd=input_apk.parent, timeout=timeout, logger=logger, label="zipalign")
+        if code != 0:
+            return _command_result(code, stdout, stderr, align_command)
+        signing_input = aligned_apk
+    else:
+        signing_input = input_apk
+
+    apksigner = resolve_command([["apksigner"]])
+    if apksigner is not None:
+        command = apksigner + [
+            "sign",
+            "--ks",
+            str(ks_path),
+            "--ks-key-alias",
+            key_alias,
+            "--out",
+            str(signed_apk),
+        ]
+        if store_pass:
+            command.extend(["--ks-pass", f"pass:{store_pass}"])
+        if key_pass:
+            command.extend(["--key-pass", f"pass:{key_pass}"])
+        command.append(str(signing_input))
+        code, stdout, stderr = run_command_logged(command, cwd=signing_input.parent, timeout=timeout, logger=logger, label="apksigner")
+        result = _command_result(code, stdout, stderr, command)
+        if code == 0:
+            result["signed_artifact"] = str(signed_apk)
+        return result
+
+    jarsigner = resolve_command([["jarsigner"]])
+    if jarsigner is None:
+        return {"ok": False, "error": "Neither apksigner nor jarsigner is available"}
+    signed_apk.write_bytes(signing_input.read_bytes())
+    command = jarsigner + ["-keystore", str(ks_path)]
+    if store_pass:
+        command.extend(["-storepass", store_pass])
+    if key_pass:
+        command.extend(["-keypass", key_pass])
+    command.extend([str(signed_apk), key_alias])
+    code, stdout, stderr = run_command_logged(command, cwd=signed_apk.parent, timeout=timeout, logger=logger, label="jarsigner")
+    result = _command_result(code, stdout, stderr, command)
+    if code == 0:
+        result["signed_artifact"] = str(signed_apk)
+    return result
+
+
+def _run_electron_packaging_action(*, workspace_root: Path, action: str, logger=None, timeout: int) -> dict[str, Any]:
+    project_root = workspace_root / "projects" / "electron_app"
+    if not project_root.exists():
+        return {"ok": False, "error": "Electron project template not available"}
+    command = _node_script_command(project_root, preferred_scripts=["package", "dist", "make", "build"])
+    if action not in {"repack", "package"} or command is None:
+        return {"ok": False, "error": "No suitable Electron packaging script was found"}
+    code, stdout, stderr = run_command_logged(command, cwd=project_root, timeout=timeout, logger=logger, label="electron-package")
+    return _command_result(code, stdout, stderr, command)
+
+
+def _run_tauri_packaging_action(*, workspace_root: Path, action: str, logger=None, timeout: int) -> dict[str, Any]:
+    project_root = workspace_root / "projects" / "tauri_app"
+    if not project_root.exists():
+        return {"ok": False, "error": "Tauri project template not available"}
+    if action not in {"repack", "package", "build"}:
+        return {"ok": False, "error": f"Unsupported Tauri packaging action {action}"}
+    npm_command = _node_script_command(project_root, preferred_scripts=["tauri", "build"])
+    if npm_command is not None:
+        if npm_command[-1] == "tauri":
+            npm_command.extend(["build"])
+        code, stdout, stderr = run_command_logged(npm_command, cwd=project_root, timeout=timeout, logger=logger, label="tauri-package")
+        return _command_result(code, stdout, stderr, npm_command)
+    cargo = resolve_command([["cargo"]])
+    if cargo is None:
+        return {"ok": False, "error": "cargo not available for Tauri packaging"}
+    command = cargo + ["tauri", "build"]
+    code, stdout, stderr = run_command_logged(command, cwd=project_root / "src-tauri", timeout=timeout, logger=logger, label="cargo-tauri-build")
+    return _command_result(code, stdout, stderr, command)
+
+
+def apply_patch_bundle(*, bundle_root: Path, target_root: Path) -> dict[str, Any]:
+    bundle_root = bundle_root.resolve()
+    target_root = target_root.resolve()
+    operations_path = bundle_root / "operations.json"
+    files_root = bundle_root / "files"
+    if not operations_path.exists():
+        return {"ok": False, "error": f"Patch operations file not found: {operations_path}"}
+    if not files_root.exists():
+        return {"ok": False, "error": f"Patch files directory not found: {files_root}"}
+    payload = json.loads(operations_path.read_text(encoding="utf-8"))
+    applied: list[dict[str, Any]] = []
+    for operation in payload.get("operations") or []:
+        relative_path = str(operation.get("relative_path", "")).replace("\\", "/").strip()
+        if not relative_path:
+            continue
+        source = files_root / relative_path
+        destination = target_root / relative_path
+        if not source.exists():
+            continue
+        ensure_dir(destination.parent)
+        destination.write_bytes(source.read_bytes())
+        applied.append({"relative_path": relative_path, "destination": str(destination)})
+    return {
+        "ok": True,
+        "bundle_root": str(bundle_root),
+        "target_root": str(target_root),
+        "applied_operations": applied,
+    }
+
+
+def _node_script_command(project_root: Path, preferred_scripts: list[str]) -> list[str] | None:
+    package_json = project_root / "package.json"
+    if not package_json.exists():
+        return None
+    try:
+        payload = json.loads(package_json.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    scripts = payload.get("scripts") or {}
+    if (project_root / "pnpm-lock.yaml").exists():
+        manager = resolve_command([["pnpm"]])
+        if manager is not None:
+            for script in preferred_scripts:
+                if script in scripts:
+                    return manager + ["run", script]
+    if (project_root / "yarn.lock").exists():
+        manager = resolve_command([["yarn"]])
+        if manager is not None:
+            for script in preferred_scripts:
+                if script in scripts:
+                    return manager + [script]
+    manager = resolve_command([["npm"]])
+    if manager is None:
+        return None
+    for script in preferred_scripts:
+        if script in scripts:
+            return manager + ["run", script]
+    return None
 
 
 def _command_result(code: int, stdout: str, stderr: str, command: list[str]) -> dict[str, Any]:

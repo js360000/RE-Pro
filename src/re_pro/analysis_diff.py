@@ -62,6 +62,72 @@ def compare_analysis_runs(base_run_dir: Path, head_run_dir: Path, output_dir: Pa
     return diff
 
 
+def create_patch_bundle_from_runs(base_run_dir: Path, head_run_dir: Path, output_dir: Path) -> dict[str, Any]:
+    output_dir = ensure_dir(output_dir.resolve())
+    diff = compare_analysis_runs(base_run_dir, head_run_dir)
+    head_report = _load_json(head_run_dir.resolve() / "report.json")
+    files_root = ensure_dir(output_dir / "files")
+    operations: list[dict[str, Any]] = []
+
+    for source in head_report.get("recovered_sources") or []:
+        original_path = str(source.get("original_path", "")).replace("\\", "/").strip()
+        restored_path = str(source.get("restored_path", "")).strip()
+        if not original_path or original_path not in diff["recovered_sources"]["added"]:
+            continue
+        source_path = Path(restored_path)
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        destination = files_root / original_path
+        ensure_dir(destination.parent)
+        destination.write_bytes(source_path.read_bytes())
+        operations.append(
+            {
+                "kind": "recovered_source",
+                "relative_path": original_path,
+                "source_path": str(source_path),
+            }
+        )
+
+    for artifact in head_report.get("artifacts") or []:
+        category = str(artifact.get("category", "")).lower()
+        if category not in {"manifest", "resource", "payload"}:
+            continue
+        artifact_path = Path(str(artifact.get("path", "")).strip())
+        if not artifact_path.exists() or not artifact_path.is_file():
+            continue
+        relative_path = f"artifacts/{artifact_path.name}"
+        destination = files_root / relative_path
+        ensure_dir(destination.parent)
+        destination.write_bytes(artifact_path.read_bytes())
+        operations.append(
+            {
+                "kind": "artifact",
+                "relative_path": relative_path,
+                "source_path": str(artifact_path),
+                "category": category,
+                "description": artifact.get("description"),
+            }
+        )
+
+    payload = {
+        "base_run_dir": str(base_run_dir),
+        "head_run_dir": str(head_run_dir),
+        "summary": diff["summary"],
+        "operations": operations,
+    }
+    operations_path = output_dir / "operations.json"
+    summary_path = output_dir / "summary.json"
+    operations_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    summary_path.write_text(json.dumps(diff, indent=2), encoding="utf-8")
+    return {
+        "ok": True,
+        "bundle_root": str(output_dir),
+        "operations_path": str(operations_path),
+        "summary_path": str(summary_path),
+        "operation_count": len(operations),
+    }
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):

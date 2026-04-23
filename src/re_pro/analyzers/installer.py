@@ -13,7 +13,7 @@ class InstallerAnalyzer(Analyzer):
     def analyze(self, context, report) -> None:
         if not context.target.is_file():
             return
-        if context.target.suffix.lower() != ".msi" and (not context.probable_binary and context.pe_metadata is None):
+        if context.target.suffix.lower() not in {".msi", ".cab"} and (not context.probable_binary and context.pe_metadata is None):
             return
 
         family = self._detect_installer_family(context)
@@ -40,7 +40,7 @@ class InstallerAnalyzer(Analyzer):
         payloads = [
             path
             for path in extracted_files
-            if path.suffix.lower() in {".exe", ".dll", ".asar", ".map", ".json", ".cab", ".msi", ".mui", ".xml"}
+            if path.suffix.lower() in {".exe", ".dll", ".asar", ".map", ".json", ".cab", ".msi", ".mui", ".xml", ".appimage", ".squashfs"}
             or path.name.lower() == "package.json"
         ]
         for payload in payloads[:20]:
@@ -55,6 +55,14 @@ class InstallerAnalyzer(Analyzer):
     def _detect_installer_family(context) -> str | None:
         if context.target.suffix.lower() == ".msi":
             return "MSI"
+        if context.target.suffix.lower() == ".cab":
+            return "CAB"
+        try:
+            header = context.target.read_bytes()[:8]
+        except OSError:
+            header = b""
+        if header.startswith(b"MSCF"):
+            return "CAB"
         strings_lower = [value.lower() for value in context.ascii_strings]
         if any(marker in value for value in strings_lower for marker in ("nullsoft", "nsis", "makensis")):
             return "NSIS"
@@ -68,6 +76,10 @@ class InstallerAnalyzer(Analyzer):
     def _extract_payload(cls, target: Path, family: str, context) -> Path | None:
         if family == "MSI":
             extracted = cls._extract_msi_admin(target, context)
+            if extracted is not None:
+                return extracted
+        if family == "CAB":
+            extracted = cls._extract_cab(target, context)
             if extracted is not None:
                 return extracted
         return cls._extract_with_7z(target, context)
@@ -99,4 +111,20 @@ class InstallerAnalyzer(Analyzer):
             context.log(f"7-Zip extracted installer payload into {destination}")
             return destination
         context.log(f"7-Zip extraction failed: {stderr.strip()}")
+        return None
+
+    @staticmethod
+    def _extract_cab(target: Path, context) -> Path | None:
+        destination = ensure_dir(context.output_dir / "installer_extract")
+        command = resolve_command([["expand", str(target), "-F:*", str(destination)]])
+        if command is None:
+            return None
+        code, stdout, stderr = run_command(command, cwd=target.parent, timeout=1200)
+        extracted_files = [path for path in destination.rglob("*") if path.is_file()]
+        if code == 0 and extracted_files:
+            context.log(f"expand.exe extracted CAB payload into {destination}")
+            return destination
+        message = stderr.strip() or stdout.strip()
+        if message:
+            context.log(f"expand.exe CAB extraction failed: {message}")
         return None

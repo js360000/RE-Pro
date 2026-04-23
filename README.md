@@ -21,6 +21,7 @@ The current build supports:
 - Optional Android manifest/resource decoding through `apktool` when installed.
 - Optional Android DEX decompilation through `jadx` when installed.
 - Java archive extraction for `.jar`, `.war`, `.ear`, and `.aar` packages, including manifest parsing, framework hints, and web source-map recovery from embedded static assets.
+- Linux package extraction for `.AppImage`, raw SquashFS images, and embedded AppImage root filesystems, including SquashFS carving and web source-map recovery from unpacked assets.
 - Apple app bundle (`.app`) inspection with `Info.plist` parsing and Mach-O header detection.
 - Apple archive extraction for `.dmg` and `.pkg` through 7-Zip when available.
 - Optional Mach-O header, symbol, and function exports through `llvm-objdump`, `llvm-nm`, `rizin`, and `radare2` when installed.
@@ -29,6 +30,7 @@ The current build supports:
 - Remote PDB acquisition from configured symbol servers using PE CodeView GUID/age records, with Microsoft’s public symbol server as the default source.
 - PE CLR-header parsing for managed metadata version, runtime version, stream layout, assembly flags, and ManagedNativeHeader data.
 - Installer-family detection for NSIS, Inno Setup, and Squirrel wrappers.
+- CAB archive detection and extraction through `expand.exe` or 7-Zip when available.
 - Windows Installer (`.msi`) detection and extraction through 7-Zip when available.
 - Installer extraction through 7-Zip when available.
 - Framework heuristics for Electron, .NET, PyInstaller/Nuitka, Rust, Go, and native C/C++.

@@ -5,6 +5,7 @@ from .electron import ElectronAnalyzer
 from .external_tools import ExternalToolAnalyzer
 from .game import GameNativeAnalyzer
 from .installer import InstallerAnalyzer
+from .linux_package import LinuxPackageAnalyzer
 from .java import JavaPackageAnalyzer
 from .llm import LLMAssistAnalyzer
 from .native import NativeLanguageAnalyzer
@@ -24,6 +25,7 @@ BUILTIN_ANALYZER_CLASSES = [
     PDBAnalyzer,
     PEResourceAnalyzer,
     InstallerAnalyzer,
+    LinuxPackageAnalyzer,
     JavaPackageAnalyzer,
     ElectronAnalyzer,
     TauriAnalyzer,
@@ -52,6 +54,7 @@ __all__ = [
     "ExternalToolAnalyzer",
     "GameNativeAnalyzer",
     "InstallerAnalyzer",
+    "LinuxPackageAnalyzer",
     "JavaPackageAnalyzer",
     "LLMAssistAnalyzer",
     "NativeLanguageAnalyzer",

@@ -27,6 +27,8 @@ z-code-MAIN-analysis_output*/
 smoke_output*/
 tool_validation_output/
 runtime_trace_*_check/
+runtime_trace_*_check*/
+runtime_trace_frida_live_check*/
 symbol_server_live_check/
 
 # Temp / probe directories

@@ -63,7 +63,7 @@ The current build supports:
 - Optional UPX unpacking through `upx -d` when installed.
 - Optional NVIDIA nvCOMP-backed GDeflate asset recovery for game data files when `nvidia-nvcomp-cu12` is installed on a CUDA-capable system.
 - Optional bounded runtime tracing for launchable Windows targets, including process observation, child-process discovery, module snapshots, stdout/stderr capture, and connection snapshots.
-- Optional Frida-backed runtime API hooks for file, registry, network, library-load, and child-process activity when the Python `frida` package is installed.
+- Optional Frida-backed runtime API hooks for file, registry, network, library-load, and child-process activity when the Python `frida` and `frida-tools` packages are installed, with phase-aware helper status output for faster failure diagnosis.
 - Optional Ghidra headless project generation when `analyzeHeadless` is installed.
 - Optional rizin exports when `rizin` or `rz-bin` is installed.
 - Optional radare2 exports when `r2`, `radare2`, or `rabin2` is installed.
@@ -133,9 +133,11 @@ python -m pip install nvidia-nvcomp-cu12
 For richer runtime instrumentation hooks:
 
 ```bash
-python -m pip install frida
+python -m pip install frida frida-tools
 re-pro analyze path\to\target.exe -o analysis_output --runtime-trace
 ```
+
+`re-pro install-tools` now also installs the Python Frida bindings/tooling into the active interpreter, so the GUI `Install Tooling` action and MCP `install_tooling` endpoint cover runtime instrumentation as well as archive/decompiler dependencies.
 
 For GPT-assisted reconstruction:
 

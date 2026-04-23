@@ -3,7 +3,9 @@ from __future__ import annotations
 import csv
 from datetime import UTC, datetime
 import io
+import importlib.metadata
 import json
+import sys
 import subprocess
 import time
 from pathlib import Path
@@ -11,95 +13,6 @@ from pathlib import Path
 from ..tooling import run_command
 from ..utils import ensure_dir, sanitize_text
 from .base import Analyzer
-
-
-FRIDA_TRACE_SCRIPT = r"""
-const events = [];
-
-function sendEvent(payload) {
-  send(payload);
-}
-
-function ptrUtf16(value) {
-  try {
-    if (value.isNull()) return null;
-    return value.readUtf16String();
-  } catch (_) {
-    return null;
-  }
-}
-
-function ptrUtf8(value) {
-  try {
-    if (value.isNull()) return null;
-    return value.readUtf8String();
-  } catch (_) {
-    return null;
-  }
-}
-
-function hookExport(moduleName, exportName, callback) {
-  try {
-    const address = Module.getExportByName(moduleName, exportName);
-    Interceptor.attach(address, {
-      onEnter(args) {
-        try {
-          callback.call(this, args);
-        } catch (e) {
-          sendEvent({ kind: "hook-error", api: exportName, message: String(e) });
-        }
-      }
-    });
-    sendEvent({ kind: "hook-installed", module: moduleName, api: exportName, address: address.toString() });
-  } catch (_) {
-  }
-}
-
-setImmediate(function () {
-  try {
-    Process.enumerateModulesSync().slice(0, 256).forEach(function (module) {
-      sendEvent({ kind: "module", name: module.name, base: module.base.toString(), path: module.path });
-    });
-  } catch (_) {
-  }
-
-  hookExport("kernel32.dll", "CreateFileW", function (args) {
-    sendEvent({ kind: "file", api: "CreateFileW", path: ptrUtf16(args[0]) });
-  });
-  hookExport("kernel32.dll", "CreateFileA", function (args) {
-    sendEvent({ kind: "file", api: "CreateFileA", path: ptrUtf8(args[0]) });
-  });
-  hookExport("kernel32.dll", "LoadLibraryW", function (args) {
-    sendEvent({ kind: "library", api: "LoadLibraryW", path: ptrUtf16(args[0]) });
-  });
-  hookExport("kernel32.dll", "LoadLibraryExW", function (args) {
-    sendEvent({ kind: "library", api: "LoadLibraryExW", path: ptrUtf16(args[0]) });
-  });
-  hookExport("kernel32.dll", "CreateProcessW", function (args) {
-    sendEvent({
-      kind: "process",
-      api: "CreateProcessW",
-      application: ptrUtf16(args[0]),
-      commandLine: ptrUtf16(args[1]),
-    });
-  });
-  hookExport("advapi32.dll", "RegOpenKeyExW", function (args) {
-    sendEvent({ kind: "registry", api: "RegOpenKeyExW", subKey: ptrUtf16(args[1]) });
-  });
-  hookExport("advapi32.dll", "RegCreateKeyExW", function (args) {
-    sendEvent({ kind: "registry", api: "RegCreateKeyExW", subKey: ptrUtf16(args[1]) });
-  });
-  hookExport("advapi32.dll", "RegSetValueExW", function (args) {
-    sendEvent({ kind: "registry", api: "RegSetValueExW", valueName: ptrUtf16(args[1]) });
-  });
-  hookExport("ws2_32.dll", "connect", function (args) {
-    sendEvent({ kind: "network", api: "connect" });
-  });
-  hookExport("ws2_32.dll", "WSAConnect", function (args) {
-    sendEvent({ kind: "network", api: "WSAConnect" });
-  });
-});
-"""
 
 
 class RuntimeTraceAnalyzer(Analyzer):
@@ -130,11 +43,22 @@ class RuntimeTraceAnalyzer(Analyzer):
         if settings.use_frida:
             frida_result = self._run_frida_trace(context, trace_dir)
             if frida_result is None:
-                report.add_note("Install the Python `frida` package to enable API-level runtime hook traces.")
+                report.add_note("Install the Python `frida` and `frida-tools` packages to enable API-level runtime hook traces.")
+            elif frida_result.get("ok") is False:
+                message = str(frida_result.get("error") or "Frida helper failed")
+                report.add_note(f"Frida runtime trace did not complete: {message}")
+                if frida_result.get("status_path"):
+                    report.add_artifact(str(frida_result["status_path"]), "runtime", "Frida helper status")
+                if frida_result.get("stderr"):
+                    stderr_path = trace_dir / "frida_stderr.txt"
+                    stderr_path.write_text(str(frida_result["stderr"]), encoding="utf-8", errors="ignore")
+                    report.add_artifact(str(stderr_path), "runtime", "Frida helper stderr")
             else:
                 events_path = trace_dir / "frida_events.json"
                 events_path.write_text(json.dumps(frida_result, indent=2), encoding="utf-8")
                 report.add_artifact(str(events_path), "runtime", "Frida runtime hook events")
+                if frida_result.get("status_path"):
+                    report.add_artifact(str(frida_result["status_path"]), "runtime", "Frida helper status")
                 self._index_frida_events(context, frida_result, events_path)
                 self._summarize_frida(report, frida_result)
 
@@ -308,48 +232,108 @@ class RuntimeTraceAnalyzer(Analyzer):
         run_command(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=30)
 
     def _run_frida_trace(self, context, trace_dir: Path) -> dict[str, object] | None:
-        frida = _import_frida()
-        if frida is None:
+        frida_info = _get_frida_info()
+        if frida_info is None:
             return None
-        events: list[dict[str, object]] = []
-        errors: list[dict[str, object]] = []
-        script_path = trace_dir / "frida_hooks.js"
-        script_path.write_text(FRIDA_TRACE_SCRIPT, encoding="utf-8")
-        device = frida.get_local_device()
-        pid = device.spawn([str(context.target)])
-        session = device.attach(pid)
-        script = session.create_script(FRIDA_TRACE_SCRIPT)
-
-        def on_message(message, data) -> None:
-            del data
-            if message.get("type") == "send" and isinstance(message.get("payload"), dict):
-                events.append(message["payload"])
-            else:
-                errors.append({"message": message})
-
-        script.on("message", on_message)
-        started_at = _utc_now()
+        output_path = trace_dir / "frida_events.json"
+        status_path = trace_dir / "frida_status.json"
+        helper_path = Path(__file__).resolve().parents[1] / "frida_runner.py"
+        command = [
+            sys.executable,
+            str(helper_path),
+            "--target",
+            str(context.target),
+            "--output",
+            str(output_path),
+            "--status",
+            str(status_path),
+            "--duration",
+            str(max(1, int(context.runtime_trace_settings.duration_seconds))),
+        ]
+        context.log(f"Frida runtime trace using {frida_info['version']} via {frida_info['python']}")
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        process = subprocess.Popen(
+            command,
+            cwd=str(context.target.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="ignore",
+            creationflags=creationflags,
+        )
+        helper_timeout = min(15, max(8, int(context.runtime_trace_settings.duration_seconds) + 4))
         try:
-            script.load()
-            device.resume(pid)
-            time.sleep(max(1, int(context.runtime_trace_settings.duration_seconds)))
-        finally:
+            stdout, stderr = process.communicate(timeout=helper_timeout)
+            code = process.returncode
+        except subprocess.TimeoutExpired:
+            self._kill_process_tree(process.pid)
             try:
-                device.kill(pid)
-            except Exception:
-                pass
-            try:
-                session.detach()
-            except Exception:
-                pass
+                stdout, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                stdout, stderr = "", ""
+            status = _load_frida_status(status_path)
+            phase = status.get("phase", "unknown")
+            detail = status.get("detail", "")
+            return {
+                "ok": False,
+                "exit_code": None,
+                "stdout": stdout,
+                "stderr": stderr,
+                "command": command,
+                "status_path": str(status_path) if status_path.exists() else "",
+                "error": (
+                    f"Frida helper timed out after {helper_timeout} seconds "
+                    f"(last phase: {phase}{'; ' + detail if detail else ''})."
+                ),
+            }
+        if code != 0:
+            status = _load_frida_status(status_path)
+            phase = status.get("phase", "unknown")
+            return {
+                "ok": False,
+                "exit_code": code,
+                "stdout": stdout,
+                "stderr": stderr,
+                "command": command,
+                "status_path": str(status_path) if status_path.exists() else "",
+                "error": f"Frida helper exited with code {code} during phase {phase}.",
+            }
+        if not output_path.exists():
+            status = _load_frida_status(status_path)
+            return {
+                "ok": False,
+                "exit_code": code,
+                "stdout": stdout,
+                "stderr": stderr,
+                "command": command,
+                "status_path": str(status_path) if status_path.exists() else "",
+                "error": "Frida helper exited without producing an events file.",
+            }
+        try:
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            return {
+                "ok": False,
+                "exit_code": code,
+                "stdout": stdout,
+                "stderr": stderr,
+                "command": command,
+                "status_path": str(status_path) if status_path.exists() else "",
+                "error": f"Invalid Frida helper JSON: {exc}",
+            }
+        if isinstance(payload, dict):
+            payload.setdefault("ok", True)
+            payload.setdefault("command", command)
+            payload.setdefault("status_path", str(status_path) if status_path.exists() else "")
+            return payload
         return {
-            "target": str(context.target),
-            "pid": pid,
-            "started_at": started_at,
-            "ended_at": _utc_now(),
-            "script_path": str(script_path),
-            "events": events,
-            "errors": errors,
+            "ok": False,
+            "exit_code": code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "command": command,
+            "status_path": str(status_path) if status_path.exists() else "",
+            "error": "Frida helper returned a non-object payload.",
         }
 
     def _summarize_observation(self, report, observation: dict[str, object]) -> None:
@@ -480,12 +464,22 @@ class RuntimeTraceAnalyzer(Analyzer):
                 context.analysis_index.add_relation(event_id, "touches_runtime_endpoint", endpoint_id)
 
 
-def _import_frida():
+def _get_frida_info() -> dict[str, str] | None:
     try:
-        import frida  # type: ignore
+        version = importlib.metadata.version("frida")
     except Exception:
         return None
-    return frida
+    return {"version": version, "python": sys.executable}
+
+
+def _load_frida_status(status_path: Path) -> dict[str, object]:
+    if not status_path.exists():
+        return {}
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _utc_now() -> str:

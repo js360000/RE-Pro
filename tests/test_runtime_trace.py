@@ -100,6 +100,61 @@ class RuntimeTraceAnalyzerTests(unittest.TestCase):
             self.assertIn(r"runtime_file:c:\temp\config.json", entity_ids)
             self.assertIn(r"runtime_registry:software\vendor\app", entity_ids)
 
+    def test_runtime_trace_records_frida_helper_failure_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "sample.exe"
+            target.write_bytes(b"MZ")
+            report = AnalysisReport(target=str(target), output_dir=str(root / "out"))
+            context = AnalysisContext(
+                target=target,
+                output_dir=root / "out",
+                probable_binary=True,
+                pe_metadata={"machine": "x64"},
+                runtime_trace_settings=RuntimeTraceSettings(enabled=True, duration_seconds=1, use_frida=True),
+            )
+
+            observation = {
+                "target": str(target),
+                "pid": 4242,
+                "exit_code": 0,
+                "timed_out": False,
+                "children": [],
+                "connections": [],
+                "modules": [],
+                "child_snapshots": [],
+                "stdout_path": "",
+                "stderr_path": "",
+            }
+
+            with (
+                patch.object(RuntimeTraceAnalyzer, "_observe_process", return_value=observation),
+                patch.object(
+                    RuntimeTraceAnalyzer,
+                    "_run_frida_trace",
+                    return_value={
+                        "ok": False,
+                        "error": "access violation",
+                        "stderr": "native crash",
+                        "status_path": str(root / "out" / "runtime_trace" / "frida_status.json"),
+                    },
+                ),
+            ):
+                RuntimeTraceAnalyzer().analyze(context, report)
+
+            self.assertTrue(any("Frida runtime trace did not complete" in note for note in report.notes))
+            self.assertTrue(any(artifact.description == "Frida helper stderr" for artifact in report.artifacts))
+            self.assertTrue(any(artifact.description == "Frida helper status" for artifact in report.artifacts))
+
+    def test_load_frida_status_returns_empty_for_invalid_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            status_path = root / "frida_status.json"
+            status_path.write_text("{invalid", encoding="utf-8")
+            from re_pro.analyzers.runtime_trace import _load_frida_status
+
+            self.assertEqual(_load_frida_status(status_path), {})
+
 
 if __name__ == "__main__":
     unittest.main()

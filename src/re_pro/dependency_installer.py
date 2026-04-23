@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -22,19 +24,21 @@ class DependencyInstaller:
         downloads_dir = ensure_dir(self.tools_root / "downloads")
         installed: list[dict[str, str]] = []
         for spec in self._build_specs():
-            executable = self._resolve_existing_executable(spec["expected_leaf"])
-            if executable.exists():
-                self._log(f"{spec['name']} already present at {executable}")
-                installed.append({"name": spec["name"], "path": str(executable), "status": "present"})
+            existing = self._probe_existing(spec)
+            if existing is not None:
+                self._log(f"{spec['name']} already present at {existing['path']}")
+                installed.append(existing)
                 continue
-            archive_path = downloads_dir / spec["archive_name"]
-            self._download(spec["url"], archive_path)
+            archive_path = downloads_dir / spec["archive_name"] if spec.get("archive_name") else None
+            if archive_path is not None and spec.get("url"):
+                self._download(spec["url"], archive_path)
             self._install_artifact(archive_path, spec)
-            executable = self._resolve_existing_executable(spec["expected_leaf"])
-            if not executable.exists():
-                raise RuntimeError(f"{spec['name']} install completed but {spec['expected_leaf']} was not found under {self.tools_root}.")
-            installed.append({"name": spec["name"], "path": str(executable), "status": "installed"})
-            self._log(f"Installed {spec['name']} into {executable}")
+            installed_record = self._probe_existing(spec, installed=True)
+            if installed_record is None:
+                expected = spec.get("expected_leaf") or spec.get("module_name") or spec["name"]
+                raise RuntimeError(f"{spec['name']} install completed but {expected} was not found under {self.tools_root}.")
+            installed.append(installed_record)
+            self._log(f"Installed {spec['name']} into {installed_record['path']}")
         manifest_path = self.tools_root / "installed_tools.json"
         manifest_path.write_text(json.dumps(installed, indent=2), encoding="utf-8")
         return {"tools_root": str(self.tools_root), "manifest_path": str(manifest_path), "installed": installed}
@@ -115,6 +119,13 @@ class DependencyInstaller:
                 "package_id": "dotnet-symbol",
                 "tool_path": "dotnet-symbol",
             },
+            {
+                "name": "Frida",
+                "archive_name": "",
+                "kind": "python-package",
+                "module_name": "frida",
+                "packages": ["frida", "frida-tools"],
+            },
         ]
 
     def _latest_temurin_21(self) -> dict[str, str]:
@@ -166,12 +177,16 @@ class DependencyInstaller:
         with zipfile.ZipFile(archive_path) as archive:
             archive.extractall(destination)
 
-    def _install_artifact(self, archive_path: Path, spec: dict[str, str]) -> None:
+    def _install_artifact(self, archive_path: Path | None, spec: dict[str, str]) -> None:
         kind = spec.get("kind", "zip")
         if kind == "zip":
+            if archive_path is None:
+                raise RuntimeError(f"Missing archive for {spec['name']}")
             self._extract_zip(archive_path, self.tools_root)
             return
         if kind == "file":
+            if archive_path is None:
+                raise RuntimeError(f"Missing archive for {spec['name']}")
             install_dir = ensure_dir(self.tools_root / spec.get("install_subdir", ""))
             destination = install_dir / spec.get("payload_name", archive_path.name)
             shutil.copy2(archive_path, destination)
@@ -185,6 +200,8 @@ class DependencyInstaller:
             )
             return
         if kind == "dotnet-sdk":
+            if archive_path is None:
+                raise RuntimeError(f"Missing archive for {spec['name']}")
             install_dir = ensure_dir(self.tools_root / "dotnet")
             command = [
                 "powershell",
@@ -229,7 +246,35 @@ class DependencyInstaller:
             if process.returncode != 0:
                 raise RuntimeError(process.stderr.strip() or process.stdout.strip() or f"Failed to install {spec['package_id']}")
             return
+        if kind == "python-package":
+            packages = spec.get("packages", "").split(";") if isinstance(spec.get("packages"), str) else spec.get("packages", [])
+            if not packages:
+                packages = [spec["module_name"]]
+            command = [sys.executable, "-m", "pip", "install", *packages]
+            self._log(f"Installing Python packages: {', '.join(packages)}")
+            process = subprocess.run(command, capture_output=True, text=True, errors="ignore", check=False)
+            if process.returncode != 0:
+                raise RuntimeError(process.stderr.strip() or process.stdout.strip() or f"Failed to install {' '.join(packages)}")
+            return
         raise RuntimeError(f"Unsupported artifact kind: {kind}")
+
+    def _probe_existing(self, spec: dict[str, str], *, installed: bool = False) -> dict[str, str] | None:
+        kind = spec.get("kind", "zip")
+        status = "installed" if installed else "present"
+        if kind == "python-package":
+            version = self._resolve_python_package_version(spec.get("module_name", ""))
+            if version is None:
+                return None
+            return {
+                "name": spec["name"],
+                "path": sys.executable,
+                "status": status,
+                "version": version,
+            }
+        executable = self._resolve_existing_executable(spec["expected_leaf"])
+        if not executable.exists():
+            return None
+        return {"name": spec["name"], "path": str(executable), "status": status}
 
     def _resolve_existing_executable(self, expected_leaf: str) -> Path:
         direct = self.tools_root / expected_leaf
@@ -243,6 +288,15 @@ class DependencyInstaller:
         if matches:
             return matches[0]
         return direct
+
+    @staticmethod
+    def _resolve_python_package_version(module_name: str) -> str | None:
+        if not module_name:
+            return None
+        try:
+            return importlib.metadata.version(module_name)
+        except importlib.metadata.PackageNotFoundError:
+            return None
 
     def _log(self, message: str) -> None:
         if self.logger:

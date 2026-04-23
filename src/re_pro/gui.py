@@ -209,6 +209,8 @@ class MainWindow(QMainWindow):
 
         self.summary_text = QTextEdit()
         self.summary_text.setReadOnly(True)
+        self.runtime_text = QPlainTextEdit()
+        self.runtime_text.setReadOnly(True)
         self.porting_text = QPlainTextEdit()
         self.porting_text.setReadOnly(True)
         self.llm_text = QPlainTextEdit()
@@ -318,6 +320,7 @@ class MainWindow(QMainWindow):
         self.history_list.currentRowChanged.connect(self._show_history_report)
 
         self.tabs.addTab(self.summary_text, "Summary")
+        self.tabs.addTab(self.runtime_text, "Runtime")
         self.tabs.addTab(self.porting_text, "Porting")
         self.tabs.addTab(self.llm_text, "LLM")
         self.tabs.addTab(self.frameworks_list, "Frameworks")
@@ -381,6 +384,7 @@ class MainWindow(QMainWindow):
         self.frameworks_list.clear()
         self.sources_tree.clear()
         self.json_text.clear()
+        self.runtime_text.clear()
         self.porting_text.clear()
         self.llm_text.clear()
         self.index_summary_text.clear()
@@ -443,6 +447,7 @@ class MainWindow(QMainWindow):
         self._history.insert(0, report)
         self.history_list.insertItem(0, f"{Path(report.get('target', '')).name} -> {report.get('output_dir', '')}")
         self._populate_summary(report)
+        self._populate_runtime(report)
         self._populate_frameworks(report)
         self._populate_porting(report)
         self._populate_llm(report)
@@ -492,6 +497,28 @@ class MainWindow(QMainWindow):
         self.frameworks_list.clear()
         for framework in report.get("frameworks") or []:
             self.frameworks_list.addItem(framework)
+
+    def _populate_runtime(self, report: dict) -> None:
+        parts: list[str] = []
+        observation = self._load_artifact_json(report, "Runtime observation manifest")
+        if observation:
+            parts.extend(["Runtime Observation", "", json.dumps(observation, indent=2)])
+        frida_status = self._load_artifact_json(report, "Frida helper status")
+        if frida_status:
+            if parts:
+                parts.extend(["", ""])
+            parts.extend(["Frida Helper Status", "", json.dumps(frida_status, indent=2)])
+        frida_events = self._load_artifact_json(report, "Frida runtime hook events")
+        if frida_events:
+            if parts:
+                parts.extend(["", ""])
+            parts.extend(["Frida Events", "", json.dumps(frida_events, indent=2)])
+        frida_stderr = self._load_artifact_text(report, "Frida helper stderr")
+        if frida_stderr:
+            if parts:
+                parts.extend(["", ""])
+            parts.extend(["Frida Helper Stderr", "", frida_stderr])
+        self.runtime_text.setPlainText("\n".join(parts))
 
     def _populate_porting(self, report: dict) -> None:
         self.porting_text.setPlainText(self._load_artifact_text(report, "Porting guidance"))
@@ -588,6 +615,7 @@ class MainWindow(QMainWindow):
             return
         report = self._history[index]
         self._populate_summary(report)
+        self._populate_runtime(report)
         self._populate_frameworks(report)
         self._populate_porting(report)
         self._populate_llm(report)

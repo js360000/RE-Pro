@@ -64,6 +64,7 @@ The current build supports:
 - Optional NVIDIA nvCOMP-backed GDeflate asset recovery for game data files when `nvidia-nvcomp-cu12` is installed on a CUDA-capable system.
 - Optional bounded runtime tracing for launchable Windows targets, including process observation, child-process discovery, module snapshots, stdout/stderr capture, and connection snapshots.
 - Optional Frida-backed runtime API hooks for file, registry, network, library-load, and child-process activity when the Python `frida` and `frida-tools` packages are installed, with phase-aware helper status output for faster failure diagnosis.
+- Automatic ARM64 Frida sidecar routing on Windows ARM64 hosts running an AMD64 main Python runtime.
 - Optional Ghidra headless project generation when `analyzeHeadless` is installed.
 - Optional rizin exports when `rizin` or `rz-bin` is installed.
 - Optional radare2 exports when `r2`, `radare2`, or `rabin2` is installed.
@@ -138,6 +139,7 @@ re-pro analyze path\to\target.exe -o analysis_output --runtime-trace
 ```
 
 `re-pro install-tools` now also installs the Python Frida bindings/tooling into the active interpreter, so the GUI `Install Tooling` action and MCP `install_tooling` endpoint cover runtime instrumentation as well as archive/decompiler dependencies.
+On Windows ARM64 systems where the main RE-Pro interpreter is AMD64, `install-tools` also provisions an embedded `tools/python-arm64` runtime and uses that sidecar automatically for Frida-based tracing.
 
 For GPT-assisted reconstruction:
 

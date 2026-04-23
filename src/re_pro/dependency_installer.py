@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import platform
 import shutil
 import subprocess
+import sysconfig
 import sys
 import zipfile
 from pathlib import Path
@@ -55,7 +57,7 @@ class DependencyInstaller:
         apktool = self._latest_github_release("iBotPeaches/Apktool")
         apktool_asset = self._select_asset(apktool, lambda name: name.startswith("apktool_") and name.endswith(".jar"))
         jdk = self._latest_temurin_21()
-        return [
+        specs = [
             {
                 "name": ".NET SDK (LTS)",
                 "url": "https://dot.net/v1/dotnet-install.ps1",
@@ -127,6 +129,20 @@ class DependencyInstaller:
                 "packages": ["frida", "frida-tools"],
             },
         ]
+        if platform.machine().upper() == "ARM64" and sysconfig.get_platform().lower() != "win-arm64":
+            python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            specs.insert(
+                0,
+                {
+                    "name": "Python ARM64 (embedded)",
+                    "url": f"https://www.python.org/ftp/python/{python_version}/python-{python_version}-embed-arm64.zip",
+                    "archive_name": f"python-{python_version}-embed-arm64.zip",
+                    "expected_leaf": "python-arm64/python.exe",
+                    "kind": "embedded-python",
+                    "install_subdir": "python-arm64",
+                },
+            )
+        return specs
 
     def _latest_temurin_21(self) -> dict[str, str]:
         url = (
@@ -250,11 +266,31 @@ class DependencyInstaller:
             packages = spec.get("packages", "").split(";") if isinstance(spec.get("packages"), str) else spec.get("packages", [])
             if not packages:
                 packages = [spec["module_name"]]
-            command = [sys.executable, "-m", "pip", "install", *packages]
+            python_runtime = self._resolve_python_runtime(spec)
+            command = [python_runtime, "-m", "pip", "install", *packages]
             self._log(f"Installing Python packages: {', '.join(packages)}")
             process = subprocess.run(command, capture_output=True, text=True, errors="ignore", check=False)
             if process.returncode != 0:
                 raise RuntimeError(process.stderr.strip() or process.stdout.strip() or f"Failed to install {' '.join(packages)}")
+            return
+        if kind == "embedded-python":
+            if archive_path is None:
+                raise RuntimeError(f"Missing archive for {spec['name']}")
+            install_dir = ensure_dir(self.tools_root / spec.get("install_subdir", "python-arm64"))
+            self._extract_zip(archive_path, install_dir)
+            pth_files = sorted(install_dir.glob("python*._pth"))
+            for pth_path in pth_files:
+                content = pth_path.read_text(encoding="utf-8", errors="ignore")
+                if "#import site" in content:
+                    content = content.replace("#import site", "import site")
+                    pth_path.write_text(content, encoding="ascii", errors="ignore")
+            bootstrap_path = install_dir / "get-pip.py"
+            self._download("https://bootstrap.pypa.io/get-pip.py", bootstrap_path)
+            command = [str(install_dir / "python.exe"), str(bootstrap_path)]
+            self._log(f"Bootstrapping pip in {install_dir}")
+            process = subprocess.run(command, capture_output=True, text=True, errors="ignore", check=False)
+            if process.returncode != 0:
+                raise RuntimeError(process.stderr.strip() or process.stdout.strip() or f"Failed to bootstrap pip in {install_dir}")
             return
         raise RuntimeError(f"Unsupported artifact kind: {kind}")
 
@@ -262,12 +298,12 @@ class DependencyInstaller:
         kind = spec.get("kind", "zip")
         status = "installed" if installed else "present"
         if kind == "python-package":
-            version = self._resolve_python_package_version(spec.get("module_name", ""))
+            version = self._resolve_python_package_version(spec.get("module_name", ""), python_runtime=self._resolve_python_runtime(spec))
             if version is None:
                 return None
             return {
                 "name": spec["name"],
-                "path": sys.executable,
+                "path": self._resolve_python_runtime(spec),
                 "status": status,
                 "version": version,
             }
@@ -290,13 +326,42 @@ class DependencyInstaller:
         return direct
 
     @staticmethod
-    def _resolve_python_package_version(module_name: str) -> str | None:
+    def _resolve_python_package_version(module_name: str, *, python_runtime: str | None = None) -> str | None:
         if not module_name:
             return None
-        try:
-            return importlib.metadata.version(module_name)
-        except importlib.metadata.PackageNotFoundError:
+        runtime = python_runtime or sys.executable
+        if runtime == sys.executable:
+            try:
+                return importlib.metadata.version(module_name)
+            except importlib.metadata.PackageNotFoundError:
+                return None
+        command = [
+            runtime,
+            "-c",
+            (
+                "import importlib.metadata, sys; "
+                f"print(importlib.metadata.version({module_name!r}))"
+            ),
+        ]
+        process = subprocess.run(command, capture_output=True, text=True, errors="ignore", check=False)
+        if process.returncode != 0:
             return None
+        return process.stdout.strip() or None
+
+    def _resolve_python_runtime(self, spec: dict[str, str]) -> str:
+        explicit = spec.get("python_runtime", "").strip()
+        if explicit:
+            return explicit
+        python_leaf = spec.get("python_leaf", "").strip()
+        if python_leaf:
+            candidate = self._resolve_existing_executable(python_leaf)
+            if candidate.exists():
+                return str(candidate)
+        if platform.machine().upper() == "ARM64" and sysconfig.get_platform().lower() != "win-arm64":
+            candidate = self._resolve_existing_executable("python-arm64/python.exe")
+            if candidate.exists():
+                return str(candidate)
+        return sys.executable
 
     def _log(self, message: str) -> None:
         if self.logger:

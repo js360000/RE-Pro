@@ -36,6 +36,27 @@ class DependencyInstallerTests(unittest.TestCase):
             with patch.object(DependencyInstaller, "_resolve_python_package_version", return_value=None):
                 self.assertIsNone(installer._probe_existing(spec))
 
+    def test_build_specs_adds_embedded_python_on_arm64_host_with_amd64_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = DependencyInstaller(tools_root=Path(temp_dir))
+            fake_release = {
+                "assets": [
+                    {"name": "ghidra_12.zip", "browser_download_url": "https://example/ghidra.zip"},
+                    {"name": "rizin-windows-shared64-1.zip", "browser_download_url": "https://example/rizin.zip"},
+                    {"name": "radare2-1-w64.zip", "browser_download_url": "https://example/radare2.zip"},
+                    {"name": "jadx-1.zip", "browser_download_url": "https://example/jadx.zip"},
+                    {"name": "apktool_1.jar", "browser_download_url": "https://example/apktool.jar"},
+                ]
+            }
+            with (
+                patch("re_pro.dependency_installer.platform.machine", return_value="ARM64"),
+                patch("re_pro.dependency_installer.sysconfig.get_platform", return_value="win-amd64"),
+                patch.object(DependencyInstaller, "_latest_github_release", return_value=fake_release),
+                patch.object(DependencyInstaller, "_latest_temurin_21", return_value={"name": "jdk.zip", "url": "https://example/jdk.zip"}),
+            ):
+                specs = installer._build_specs()
+            self.assertEqual(specs[0]["name"], "Python ARM64 (embedded)")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -168,6 +168,10 @@ LOCAL_TOOL_GLOBS: dict[str, list[str]] = {
         "dotnet-symbol/dotnet-symbol.exe",
         "dotnet-symbol*/dotnet-symbol.exe",
     ],
+    "python-arm64": [
+        "python-arm64/python.exe",
+        "python-arm64*/python.exe",
+    ],
 }
 
 

@@ -155,6 +155,33 @@ class RuntimeTraceAnalyzerTests(unittest.TestCase):
 
             self.assertEqual(_load_frida_status(status_path), {})
 
+    def test_select_frida_runtime_prefers_arm64_sidecar_on_arm64_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "sample.exe"
+            target.write_bytes(b"MZ")
+            context = AnalysisContext(
+                target=target,
+                output_dir=root / "out",
+                probable_binary=True,
+                pe_metadata={"machine": "ARM64"},
+                runtime_trace_settings=RuntimeTraceSettings(enabled=True, duration_seconds=1, use_frida=True),
+            )
+            with (
+                patch("re_pro.analyzers.runtime_trace.platform.machine", return_value="ARM64"),
+                patch("re_pro.analyzers.runtime_trace.sysconfig.get_platform", return_value="win-amd64"),
+                patch("re_pro.analyzers.runtime_trace.resolve_tool_path", return_value=r"C:\tools\python-arm64\python.exe"),
+                patch(
+                    "re_pro.analyzers.runtime_trace._probe_frida_runtime",
+                    return_value={"version": "17.9.1", "python": r"C:\tools\python-arm64\python.exe", "platform": "win-arm64"},
+                ),
+            ):
+                from re_pro.analyzers.runtime_trace import _select_frida_runtime
+
+                result = _select_frida_runtime(context)
+            self.assertIsNotNone(result)
+            self.assertEqual(result["python"], r"C:\tools\python-arm64\python.exe")
+
 
 if __name__ == "__main__":
     unittest.main()

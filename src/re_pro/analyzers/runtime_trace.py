@@ -5,12 +5,14 @@ from datetime import UTC, datetime
 import io
 import importlib.metadata
 import json
+import platform
+import sysconfig
 import sys
 import subprocess
 import time
 from pathlib import Path
 
-from ..tooling import run_command
+from ..tooling import resolve_tool_path, run_command
 from ..utils import ensure_dir, sanitize_text
 from .base import Analyzer
 
@@ -232,14 +234,14 @@ class RuntimeTraceAnalyzer(Analyzer):
         run_command(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=30)
 
     def _run_frida_trace(self, context, trace_dir: Path) -> dict[str, object] | None:
-        frida_info = _get_frida_info()
+        frida_info = _select_frida_runtime(context)
         if frida_info is None:
             return None
         output_path = trace_dir / "frida_events.json"
         status_path = trace_dir / "frida_status.json"
         helper_path = Path(__file__).resolve().parents[1] / "frida_runner.py"
         command = [
-            sys.executable,
+            frida_info["python"],
             str(helper_path),
             "--target",
             str(context.target),
@@ -371,12 +373,13 @@ class RuntimeTraceAnalyzer(Analyzer):
         registry_events = [event for event in events if event.get("kind") == "registry"]
         network_events = [event for event in events if event.get("kind") == "network"]
         process_events = [event for event in events if event.get("kind") == "process"]
+        module_events = [event for event in events if event.get("kind") == "module"]
         report.add_finding(
             "Frida runtime hooks captured",
-            "Frida intercepted selected file, registry, network, library, and process APIs during runtime tracing.",
+            "Frida captured runtime instrumentation events, including module discovery and selected API hook activity.",
             severity="info",
             details=(
-                f"events={len(events)}; files={len(file_events)}; registry={len(registry_events)}; "
+                f"events={len(events)}; modules={len(module_events)}; files={len(file_events)}; registry={len(registry_events)}; "
                 f"network={len(network_events)}; process={len(process_events)}"
             ),
         )
@@ -464,12 +467,51 @@ class RuntimeTraceAnalyzer(Analyzer):
                 context.analysis_index.add_relation(event_id, "touches_runtime_endpoint", endpoint_id)
 
 
-def _get_frida_info() -> dict[str, str] | None:
-    try:
-        version = importlib.metadata.version("frida")
-    except Exception:
+def _select_frida_runtime(context) -> dict[str, str] | None:
+    host_machine = platform.machine().upper()
+    current_platform = sysconfig.get_platform().lower()
+    target_machine = str((context.pe_metadata or {}).get("machine", "")).upper()
+
+    preferred_runtime = sys.executable
+    if host_machine == "ARM64" and current_platform != "win-arm64":
+        sidecar = resolve_tool_path("python-arm64", extra_patterns=["python-arm64/python.exe", "python-arm64*/python.exe"])
+        if target_machine == "ARM64":
+            if not sidecar:
+                return None
+            preferred_runtime = sidecar
+        elif sidecar:
+            preferred_runtime = sidecar
+
+    return _probe_frida_runtime(preferred_runtime)
+
+
+def _probe_frida_runtime(python_runtime: str) -> dict[str, str] | None:
+    if python_runtime == sys.executable:
+        try:
+            version = importlib.metadata.version("frida")
+        except Exception:
+            return None
+        return {"version": version, "python": python_runtime, "platform": sysconfig.get_platform()}
+    command = [
+        python_runtime,
+        "-c",
+        (
+            "import importlib.metadata, json, sysconfig; "
+            "print(json.dumps({'version': importlib.metadata.version('frida'), 'platform': sysconfig.get_platform()}))"
+        ),
+    ]
+    process = subprocess.run(command, capture_output=True, text=True, errors="ignore", check=False)
+    if process.returncode != 0:
         return None
-    return {"version": version, "python": sys.executable}
+    try:
+        payload = json.loads(process.stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    version = str(payload.get("version", "")).strip()
+    platform_tag = str(payload.get("platform", "")).strip()
+    if not version:
+        return None
+    return {"version": version, "python": python_runtime, "platform": platform_tag}
 
 
 def _load_frida_status(status_path: Path) -> dict[str, object]:

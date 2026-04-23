@@ -32,7 +32,7 @@ function ptrUtf8(value) {
 
 function hookExport(moduleName, exportName, callback) {
   try {
-    const address = Module.getExportByName(moduleName, exportName);
+    const address = Module.getGlobalExportByName(exportName);
     Interceptor.attach(address, {
       onEnter(args) {
         try {
@@ -43,16 +43,20 @@ function hookExport(moduleName, exportName, callback) {
       }
     });
     sendEvent({ kind: "hook-installed", module: moduleName, api: exportName, address: address.toString() });
-  } catch (_) {
+  } catch (e) {
+    sendEvent({ kind: "hook-failed", module: moduleName, api: exportName, message: String(e) });
   }
 }
 
+sendEvent({ kind: "script-loaded" });
+
 setImmediate(function () {
   try {
-    Process.enumerateModulesSync().slice(0, 256).forEach(function (module) {
-      sendEvent({ kind: "module", name: module.name, base: module.base.toString(), path: module.path });
+    Process.enumerateModules().slice(0, 256).forEach(function (module) {
+      sendEvent({ kind: "module", name: module.name, base: module.base.toString() });
     });
-  } catch (_) {
+  } catch (e) {
+    sendEvent({ kind: "module-enumeration-failed", message: String(e) });
   }
 
   hookExport("kernel32.dll", "CreateFileW", function (args) {

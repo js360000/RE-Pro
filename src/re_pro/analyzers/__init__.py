@@ -5,6 +5,7 @@ from .electron import ElectronAnalyzer
 from .external_tools import ExternalToolAnalyzer
 from .game import GameNativeAnalyzer
 from .installer import InstallerAnalyzer
+from .java import JavaPackageAnalyzer
 from .llm import LLMAssistAnalyzer
 from .native import NativeLanguageAnalyzer
 from .pdb import PDBAnalyzer
@@ -14,6 +15,7 @@ from .python_packaged import PythonPackagedAnalyzer
 from .resources import PEResourceAnalyzer
 from .runtime_trace import RuntimeTraceAnalyzer
 from .tauri import TauriAnalyzer
+from .wasm import WasmAnalyzer
 
 BUILTIN_ANALYZER_CLASSES = [
     AndroidAnalyzer,
@@ -22,12 +24,14 @@ BUILTIN_ANALYZER_CLASSES = [
     PDBAnalyzer,
     PEResourceAnalyzer,
     InstallerAnalyzer,
+    JavaPackageAnalyzer,
     ElectronAnalyzer,
     TauriAnalyzer,
     DotNetAnalyzer,
     PythonPackagedAnalyzer,
     NativeLanguageAnalyzer,
     GameNativeAnalyzer,
+    WasmAnalyzer,
     ExternalToolAnalyzer,
     RuntimeTraceAnalyzer,
     LLMAssistAnalyzer,
@@ -48,6 +52,7 @@ __all__ = [
     "ExternalToolAnalyzer",
     "GameNativeAnalyzer",
     "InstallerAnalyzer",
+    "JavaPackageAnalyzer",
     "LLMAssistAnalyzer",
     "NativeLanguageAnalyzer",
     "PDBAnalyzer",
@@ -57,5 +62,6 @@ __all__ = [
     "PythonPackagedAnalyzer",
     "TauriAnalyzer",
     "RuntimeTraceAnalyzer",
+    "WasmAnalyzer",
     "builtin_analyzers",
 ]

@@ -20,6 +20,7 @@ The current build supports:
 - Android web-asset/source-map recovery from embedded `assets/` bundles when source maps ship `sourcesContent`.
 - Optional Android manifest/resource decoding through `apktool` when installed.
 - Optional Android DEX decompilation through `jadx` when installed.
+- Java archive extraction for `.jar`, `.war`, `.ear`, and `.aar` packages, including manifest parsing, framework hints, and web source-map recovery from embedded static assets.
 - Apple app bundle (`.app`) inspection with `Info.plist` parsing and Mach-O header detection.
 - Apple archive extraction for `.dmg` and `.pkg` through 7-Zip when available.
 - Optional Mach-O header, symbol, and function exports through `llvm-objdump`, `llvm-nm`, `rizin`, and `radare2` when installed.
@@ -36,6 +37,7 @@ The current build supports:
 - Tauri embedded asset manifest recovery, section dumping, and Brotli-backed frontend asset extraction.
 - PE resource extraction for manifests, version blobs, icons, HTML, and raw resource payloads.
 - ELF parsing for headers, program headers, sections, dynamic dependencies, interpreters, and symbol tables.
+- WebAssembly (`.wasm`) parsing for headers, sections, imports, exports, producers metadata, sourceMappingURL recovery, and adjacent source-map restoration.
 - MIPS-aware ELF analysis, including little/big-endian tagging, MIPS flag decoding, and PS2-style sectionless ELF heuristics.
 - Fast Capstone-backed ELF instruction previews from executable sections or load segments when the Python `capstone` package is installed.
 - PS2-oriented Ghidra routing for probable Emotion Engine ELFs, with automatic `MIPS:LE/BE:64:64-32addr` imports plus headless program/function exports when Ghidra is installed.

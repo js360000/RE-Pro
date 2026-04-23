@@ -27,7 +27,7 @@ class AndroidAnalyzer(Analyzer):
             return
 
         suffix = context.target.suffix.lower()
-        if suffix not in {".apk", ".apks", ".xapk"}:
+        if suffix not in {".apk", ".apks", ".xapk", ".aab"}:
             return
         if not zipfile.is_zipfile(context.target):
             return
@@ -35,8 +35,40 @@ class AndroidAnalyzer(Analyzer):
         if suffix == ".apk":
             self._analyze_single_apk(context.target, ensure_dir(context.output_dir / "apk_extract"), report, context)
             return
+        if suffix == ".aab":
+            self._analyze_app_bundle(context.target, report, context)
+            return
 
         self._analyze_package_set(context.target, report, context)
+
+    def _analyze_app_bundle(self, target: Path, report, context) -> None:
+        extracted_dir = ensure_dir(context.output_dir / "aab_extract")
+        context.log(f"Extracting Android App Bundle {target.name} to {extracted_dir}")
+        with zipfile.ZipFile(target) as archive:
+            archive.extractall(extracted_dir)
+            members = archive.namelist()
+
+        report.target_type = "android-app-bundle"
+        report.add_framework("Android App Bundle (.aab)")
+        report.add_artifact(str(extracted_dir), "directory", "Extracted Android App Bundle")
+        report.add_note(f"Android App Bundle extraction produced {len(members)} archive members.")
+
+        modules = self._discover_bundle_modules(extracted_dir)
+        if not modules:
+            report.add_note("No Android App Bundle modules were found inside the extracted archive.")
+            return
+
+        report.add_note(f"Recovered {len(modules)} Android App Bundle module(s): {', '.join(module.name for module in modules[:8])}")
+        for module_dir in modules[:12]:
+            report.add_artifact(str(module_dir), "directory", f"Android App Bundle module: {module_dir.name}")
+
+        primary_module = next((module for module in modules if module.name == "base"), modules[0])
+        self._inspect_bundle_module(primary_module, report, context)
+        if context.run_external_tools:
+            report.add_note(
+                "AAB inputs are inspected directly, but automated JADX/apktool passes currently target APKs. "
+                "Build or extract a base APK from the bundle for full Android decompilation."
+            )
 
     def _analyze_single_apk(
         self,
@@ -74,14 +106,7 @@ class AndroidAnalyzer(Analyzer):
         if (extracted_dir / "resources.arsc").exists():
             report.add_note("resources.arsc is present; resource names may require APK-specific tooling when the manifest is binary AXML.")
 
-        if (extracted_dir / "assets" / "flutter_assets").exists() or list(extracted_dir.glob("lib/*/libflutter.so")):
-            report.add_framework("Android framework: Flutter")
-        if list(extracted_dir.glob("assets/*.bundle")) or (extracted_dir / "assets" / "index.android.bundle").exists():
-            report.add_framework("Android framework: React Native")
-        if (extracted_dir / "assets" / "www").exists():
-            report.add_framework("Android framework: WebView bundle")
-            if (extracted_dir / "assets" / "www" / "cordova.js").exists():
-                report.add_framework("Android framework: Cordova")
+        self._record_android_frameworks(extracted_dir, report)
 
         package_json = self._find_first(extracted_dir, "package.json")
         if package_json:
@@ -116,6 +141,41 @@ class AndroidAnalyzer(Analyzer):
         base_extract = ensure_dir(context.output_dir / "base_apk_extract")
         self._analyze_single_apk(base_apk, base_extract, report, context, run_external_tools=False)
         self._run_external_android_tools(base_apk, report, context)
+
+    def _inspect_bundle_module(self, module_dir: Path, report, context) -> None:
+        context.log(f"Inspecting Android App Bundle module {module_dir.name} under {module_dir}")
+        if module_dir.name == "base":
+            report.add_note("Using the base module as the primary analysis target inside the Android App Bundle.")
+
+        dex_dir = module_dir / "dex"
+        lib_dir = module_dir / "lib"
+        dex_files = sorted(path.name for path in dex_dir.glob("classes*.dex"))
+        native_libs = sorted({path.parent.name for path in lib_dir.glob("*/*.so")})
+        context.log(f"Detected {len(dex_files)} DEX file(s) and {len(native_libs)} native ABI folder(s) in bundle module {module_dir.name}")
+        if dex_files:
+            report.add_note(f"{module_dir.name} module DEX files present: {', '.join(dex_files[:5])}")
+        if native_libs:
+            report.add_note(f"{module_dir.name} module native library architectures present: {', '.join(native_libs)}")
+
+        manifest_path = module_dir / "manifest" / "AndroidManifest.xml"
+        if manifest_path.exists():
+            report.add_artifact(str(manifest_path), "manifest", f"Android app bundle manifest ({module_dir.name} module)")
+            self._record_manifest(manifest_path, report)
+
+        resources_pb = module_dir / "resources.pb"
+        if resources_pb.exists():
+            report.add_note(
+                f"{module_dir.name} module uses resources.pb; bundletool or aapt2 may be needed for richer resource names."
+            )
+
+        self._record_android_frameworks(module_dir, report)
+
+        package_json = self._find_first(module_dir, "package.json")
+        if package_json:
+            report.add_artifact(str(package_json), "manifest", "Recovered package.json")
+            self._record_package_metadata(package_json, report)
+
+        self._restore_source_maps(module_dir, report, context)
 
     def _record_manifest(self, manifest_path: Path, report) -> None:
         try:
@@ -365,6 +425,32 @@ class AndroidAnalyzer(Analyzer):
         for candidate in root.rglob(name):
             return candidate
         return None
+
+    @staticmethod
+    def _discover_bundle_modules(extracted_dir: Path) -> list[Path]:
+        modules: list[Path] = []
+        for candidate in sorted(extracted_dir.iterdir()):
+            if not candidate.is_dir():
+                continue
+            if (
+                (candidate / "manifest" / "AndroidManifest.xml").exists()
+                or (candidate / "dex").exists()
+                or (candidate / "assets").exists()
+                or (candidate / "lib").exists()
+            ):
+                modules.append(candidate)
+        return modules
+
+    @staticmethod
+    def _record_android_frameworks(root: Path, report) -> None:
+        if (root / "assets" / "flutter_assets").exists() or list(root.glob("lib/*/libflutter.so")):
+            report.add_framework("Android framework: Flutter")
+        if list(root.glob("assets/*.bundle")) or (root / "assets" / "index.android.bundle").exists():
+            report.add_framework("Android framework: React Native")
+        if (root / "assets" / "www").exists():
+            report.add_framework("Android framework: WebView bundle")
+            if (root / "assets" / "www" / "cordova.js").exists():
+                report.add_framework("Android framework: Cordova")
 
     @staticmethod
     def _record_package_metadata(package_json: Path, report) -> None:

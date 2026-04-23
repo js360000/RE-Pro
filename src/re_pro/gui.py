@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -36,7 +37,9 @@ from PyQt5.QtWidgets import (
 
 from .engine import ReverseEngineeringEngine
 from .dependency_installer import DependencyInstaller
+from .index_workflows import build_entity_workflow
 from .models import LlmAssistSettings
+from .models import RuntimeTraceSettings
 
 
 class AnalysisWorker(QThread):
@@ -51,6 +54,7 @@ class AnalysisWorker(QThread):
         run_external_tools: bool,
         run_ghidra: bool,
         llm_settings: LlmAssistSettings,
+        runtime_trace_settings: RuntimeTraceSettings,
     ) -> None:
         super().__init__()
         self.target = target
@@ -58,6 +62,7 @@ class AnalysisWorker(QThread):
         self.run_external_tools = run_external_tools
         self.run_ghidra = run_ghidra
         self.llm_settings = llm_settings
+        self.runtime_trace_settings = runtime_trace_settings
 
     def run(self) -> None:
         try:
@@ -67,6 +72,7 @@ class AnalysisWorker(QThread):
                 run_external_tools=self.run_external_tools,
                 run_ghidra=self.run_ghidra,
                 llm_settings=self.llm_settings,
+                runtime_trace_settings=self.runtime_trace_settings,
             )
             report = engine.analyze(self.target)
             self.completed.emit(report.to_dict())
@@ -100,6 +106,9 @@ class MainWindow(QMainWindow):
         self.worker: AnalysisWorker | None = None
         self.tool_worker: ToolInstallWorker | None = None
         self._history: list[dict] = []
+        self._current_report: dict | None = None
+        self._current_index_payload: dict | None = None
+        self._current_index_workflow: dict | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -152,6 +161,19 @@ class MainWindow(QMainWindow):
         llm_options.addWidget(self.llm_install_checkbox)
         llm_options.addWidget(self.llm_build_checkbox)
         controls_layout.addRow("LLM", llm_options)
+
+        runtime_options = QHBoxLayout()
+        self.runtime_trace_checkbox = QCheckBox("Runtime Trace")
+        self.runtime_trace_seconds_input = QLineEdit("8")
+        self.runtime_trace_seconds_input.setMaximumWidth(60)
+        self.runtime_trace_frida_checkbox = QCheckBox("Use Frida")
+        self.runtime_trace_frida_checkbox.setChecked(True)
+        runtime_options.addWidget(self.runtime_trace_checkbox)
+        runtime_options.addWidget(QLabel("Seconds"))
+        runtime_options.addWidget(self.runtime_trace_seconds_input)
+        runtime_options.addWidget(self.runtime_trace_frida_checkbox)
+        runtime_options.addStretch(1)
+        controls_layout.addRow("Runtime", runtime_options)
 
         llm_params = QHBoxLayout()
         self.llm_model_input = QLineEdit("gpt-5.4")
@@ -230,6 +252,62 @@ class MainWindow(QMainWindow):
         self.sources_tree.itemDoubleClicked.connect(self._open_tree_item_path)
         self.sources_tree.currentItemChanged.connect(self._preview_source)
 
+        index_panel = QWidget()
+        index_layout = QVBoxLayout(index_panel)
+        index_search_row = QHBoxLayout()
+        self.index_search_input = QLineEdit()
+        self.index_search_input.setPlaceholderText("Search analysis index entities, e.g. imgui, d3d11, success, function")
+        self.index_kind_combo = QComboBox()
+        self.index_kind_combo.addItems(["All", "framework", "function", "string", "artifact", "resource", "import", "section", "tool", "finding"])
+        index_search_row.addWidget(QLabel("Search"))
+        index_search_row.addWidget(self.index_search_input)
+        index_search_row.addWidget(QLabel("Kind"))
+        index_search_row.addWidget(self.index_kind_combo)
+        self.index_summary_text = QPlainTextEdit()
+        self.index_summary_text.setReadOnly(True)
+        self.index_summary_text.setMaximumHeight(100)
+        self.index_table = QTableWidget(0, 4)
+        self.index_table.setHorizontalHeaderLabels(["Kind", "Label", "Key", "Attributes"])
+        self.index_table.horizontalHeader().setStretchLastSection(True)
+        self.index_table.itemSelectionChanged.connect(self._show_selected_index_entity)
+        self.index_detail_text = QPlainTextEdit()
+        self.index_detail_text.setReadOnly(True)
+        self.index_workflow_summary = QPlainTextEdit()
+        self.index_workflow_summary.setReadOnly(True)
+        self.index_workflow_summary.setMaximumHeight(110)
+        self.index_related_list = QListWidget()
+        self.index_related_list.itemDoubleClicked.connect(self._open_index_related_item)
+        workflow_actions = QHBoxLayout()
+        self.index_open_button = QPushButton("Open Selected")
+        self.index_preview_button = QPushButton("Preview Selected")
+        self.index_artifacts_button = QPushButton("Show Artifacts")
+        self.index_sources_button = QPushButton("Show Sources")
+        self.index_porting_button = QPushButton("Open Porting")
+        self.index_recompile_button = QPushButton("Open Recompile")
+        workflow_actions.addWidget(self.index_open_button)
+        workflow_actions.addWidget(self.index_preview_button)
+        workflow_actions.addWidget(self.index_artifacts_button)
+        workflow_actions.addWidget(self.index_sources_button)
+        workflow_actions.addWidget(self.index_porting_button)
+        workflow_actions.addWidget(self.index_recompile_button)
+        workflow_panel = QWidget()
+        workflow_layout = QVBoxLayout(workflow_panel)
+        workflow_layout.setContentsMargins(0, 0, 0, 0)
+        workflow_layout.addWidget(self.index_workflow_summary)
+        workflow_layout.addWidget(self.index_related_list)
+        workflow_layout.addLayout(workflow_actions)
+        index_detail_splitter = QSplitter(Qt.Horizontal)
+        index_detail_splitter.addWidget(self.index_detail_text)
+        index_detail_splitter.addWidget(workflow_panel)
+        index_detail_splitter.setSizes([500, 360])
+        index_splitter = QSplitter(Qt.Vertical)
+        index_splitter.addWidget(self.index_table)
+        index_splitter.addWidget(index_detail_splitter)
+        index_splitter.setSizes([360, 260])
+        index_layout.addLayout(index_search_row)
+        index_layout.addWidget(self.index_summary_text)
+        index_layout.addWidget(index_splitter)
+
         self.json_text = QPlainTextEdit()
         self.json_text.setReadOnly(True)
 
@@ -246,6 +324,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.findings_table, "Findings")
         self.tabs.addTab(artifacts_splitter, "Artifacts")
         self.tabs.addTab(self.sources_tree, "Recovered Sources")
+        self.tabs.addTab(index_panel, "Analysis Index")
         self.tabs.addTab(self.json_text, "JSON")
         self.tabs.addTab(self.history_list, "History")
         splitter.addWidget(self.tabs)
@@ -261,6 +340,14 @@ class MainWindow(QMainWindow):
         browse_output.clicked.connect(self._browse_output)
         self.analyze_button.clicked.connect(self._start_analysis)
         self.install_tools_button.clicked.connect(self._install_tooling)
+        self.index_search_input.textChanged.connect(self._refresh_index_table)
+        self.index_kind_combo.currentTextChanged.connect(self._refresh_index_table)
+        self.index_open_button.clicked.connect(self._open_selected_index_related_item)
+        self.index_preview_button.clicked.connect(self._preview_selected_index_related_item)
+        self.index_artifacts_button.clicked.connect(self._show_index_workflow_artifacts)
+        self.index_sources_button.clicked.connect(self._show_index_workflow_sources)
+        self.index_porting_button.clicked.connect(self._open_index_porting_target)
+        self.index_recompile_button.clicked.connect(self._open_index_recompile_target)
 
     def _browse_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Select executable or file")
@@ -296,6 +383,13 @@ class MainWindow(QMainWindow):
         self.json_text.clear()
         self.porting_text.clear()
         self.llm_text.clear()
+        self.index_summary_text.clear()
+        self.index_table.setRowCount(0)
+        self.index_detail_text.clear()
+        self.index_workflow_summary.clear()
+        self.index_related_list.clear()
+        self._current_index_payload = None
+        self._current_index_workflow = None
         self.analyze_button.setEnabled(False)
         self.statusBar().showMessage("Analyzing...")
 
@@ -316,6 +410,11 @@ class MainWindow(QMainWindow):
                 user_task=self.llm_task_input.toPlainText().strip(),
                 allow_dependency_installs=self.llm_install_checkbox.isChecked(),
                 run_recompile_checks=self.llm_build_checkbox.isChecked(),
+            ),
+            runtime_trace_settings=RuntimeTraceSettings(
+                enabled=self.runtime_trace_checkbox.isChecked(),
+                duration_seconds=max(1, self._parse_int(self.runtime_trace_seconds_input.text().strip(), default=8)),
+                use_frida=self.runtime_trace_frida_checkbox.isChecked(),
             ),
         )
         self.worker.progress.connect(self._append_log)
@@ -340,6 +439,7 @@ class MainWindow(QMainWindow):
     def _handle_report(self, report: dict) -> None:
         self.analyze_button.setEnabled(True)
         self.statusBar().showMessage(f"Analysis complete: {report.get('output_dir', '')}")
+        self._current_report = report
         self._history.insert(0, report)
         self.history_list.insertItem(0, f"{Path(report.get('target', '')).name} -> {report.get('output_dir', '')}")
         self._populate_summary(report)
@@ -349,8 +449,7 @@ class MainWindow(QMainWindow):
         self._populate_findings(report)
         self._populate_artifacts(report)
         self._populate_sources(report)
-        import json
-
+        self._populate_index(report)
         self.json_text.setPlainText(json.dumps(report, indent=2))
 
     def _handle_error(self, error: str) -> None:
@@ -495,9 +594,9 @@ class MainWindow(QMainWindow):
         self._populate_findings(report)
         self._populate_artifacts(report)
         self._populate_sources(report)
-        import json
-
+        self._populate_index(report)
         self.json_text.setPlainText(json.dumps(report, indent=2))
+        self._current_report = report
 
     def _open_item_path(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.UserRole)
@@ -531,6 +630,239 @@ class MainWindow(QMainWindow):
             except OSError:
                 continue
         return ""
+
+    def _populate_index(self, report: dict) -> None:
+        payload = self._load_artifact_json(report, "Unified analysis index")
+        self._current_index_payload = payload
+        if not payload:
+            self.index_summary_text.setPlainText("No analysis index available for this report.")
+            self.index_table.setRowCount(0)
+            self.index_detail_text.clear()
+            self.index_workflow_summary.clear()
+            self.index_related_list.clear()
+            self._current_index_workflow = None
+            return
+        summary = payload.get("summary") or {}
+        entity_counts = summary.get("entity_counts") or {}
+        lines = [f"{kind}: {count}" for kind, count in sorted(entity_counts.items())]
+        summary_text = (
+            f"Entities: {sum(entity_counts.values())}\n"
+            f"Relations: {summary.get('relation_count', 0)}\n"
+            + ("\n".join(lines) if lines else "")
+        )
+        self.index_summary_text.setPlainText(summary_text)
+        self._refresh_index_table()
+
+    def _refresh_index_table(self) -> None:
+        payload = self._current_index_payload or {}
+        entities = payload.get("entities") or []
+        query = self.index_search_input.text().strip().lower()
+        selected_kind = self.index_kind_combo.currentText().strip().lower()
+        if selected_kind == "all":
+            selected_kind = ""
+        filtered = []
+        for entity in entities:
+            kind = str(entity.get("kind", ""))
+            if selected_kind and kind.lower() != selected_kind:
+                continue
+            haystack = " ".join(
+                [
+                    kind,
+                    str(entity.get("label", "")),
+                    str(entity.get("key", "")),
+                    json.dumps(entity.get("attributes") or {}, ensure_ascii=False),
+                ]
+            ).lower()
+            if query and query not in haystack:
+                continue
+            filtered.append(entity)
+
+        self.index_table.setRowCount(len(filtered))
+        for row, entity in enumerate(filtered):
+            entity_id = f"{entity.get('kind')}:{entity.get('key')}"
+            self.index_table.setItem(row, 0, QTableWidgetItem(str(entity.get("kind", ""))))
+            self.index_table.setItem(row, 1, QTableWidgetItem(str(entity.get("label", ""))))
+            self.index_table.setItem(row, 2, QTableWidgetItem(str(entity.get("key", ""))))
+            self.index_table.setItem(row, 3, QTableWidgetItem(self._format_attributes(entity.get("attributes") or {})))
+            for column in range(4):
+                item = self.index_table.item(row, column)
+                if item is not None:
+                    item.setData(Qt.UserRole, entity_id)
+        self.index_table.resizeColumnsToContents()
+        if not filtered:
+            self.index_detail_text.setPlainText("No entities matched the current filter.")
+            self.index_workflow_summary.clear()
+            self.index_related_list.clear()
+            self._current_index_workflow = None
+
+    def _show_selected_index_entity(self) -> None:
+        payload = self._current_index_payload or {}
+        items = self.index_table.selectedItems()
+        if not items:
+            return
+        entity_id = items[0].data(Qt.UserRole)
+        if not entity_id:
+            return
+        entity = None
+        for candidate in payload.get("entities") or []:
+            candidate_id = f"{candidate.get('kind')}:{candidate.get('key')}"
+            if candidate_id == entity_id:
+                entity = candidate
+                break
+        if entity is None:
+            self.index_detail_text.clear()
+            self.index_workflow_summary.clear()
+            self.index_related_list.clear()
+            self._current_index_workflow = None
+            return
+        related = [
+            relation
+            for relation in payload.get("relations") or []
+            if relation.get("source") == entity_id or relation.get("target") == entity_id
+        ][:200]
+        detail = {
+            "entity_id": entity_id,
+            "entity": entity,
+            "related_relations": related,
+        }
+        self.index_detail_text.setPlainText(json.dumps(detail, indent=2))
+        if self._current_report is None:
+            self.index_workflow_summary.clear()
+            self.index_related_list.clear()
+            self._current_index_workflow = None
+            return
+        workflow = build_entity_workflow(self._current_report, payload, entity_id)
+        self._current_index_workflow = workflow
+        self.index_workflow_summary.setPlainText(str(workflow.get("workflow_summary", "")))
+        self._populate_index_related_list(workflow)
+
+    def _populate_index_related_list(self, workflow: dict) -> None:
+        self.index_related_list.clear()
+        added_paths: set[str] = set()
+        for artifact in workflow.get("artifact_candidates") or []:
+            path = str(artifact.get("path", "")).strip()
+            if not path or path in added_paths:
+                continue
+            added_paths.add(path)
+            label = str(artifact.get("label", "")) or Path(path).name
+            item = QListWidgetItem(f"[artifact] {label} - {path}")
+            item.setData(Qt.UserRole, path)
+            item.setData(Qt.UserRole + 1, "artifact")
+            self.index_related_list.addItem(item)
+        for source in workflow.get("recovered_sources") or []:
+            path = str(source.get("restored_path", "")).strip()
+            if not path or path in added_paths:
+                continue
+            added_paths.add(path)
+            label = str(source.get("original_path", "")) or Path(path).name
+            item = QListWidgetItem(f"[source] {label} -> {path}")
+            item.setData(Qt.UserRole, path)
+            item.setData(Qt.UserRole + 1, "source")
+            self.index_related_list.addItem(item)
+        action_targets = workflow.get("action_targets") or {}
+        for label, path, role in [
+            ("Porting guidance", action_targets.get("porting_notes_path"), "porting"),
+            ("Prepared sources", action_targets.get("prepared_sources_path"), "porting"),
+            ("Recompile workspace", action_targets.get("recompile_workspace_path"), "recompile"),
+            ("Recompile manifest", action_targets.get("recompile_manifest_path"), "recompile"),
+            ("LLM summary", action_targets.get("llm_summary_path"), "llm"),
+        ]:
+            if not path or path in added_paths:
+                continue
+            added_paths.add(path)
+            item = QListWidgetItem(f"[{role}] {label} - {path}")
+            item.setData(Qt.UserRole, path)
+            item.setData(Qt.UserRole + 1, role)
+            self.index_related_list.addItem(item)
+
+    def _open_index_related_item(self, item: QListWidgetItem) -> None:
+        path = item.data(Qt.UserRole)
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _open_selected_index_related_item(self) -> None:
+        item = self.index_related_list.currentItem()
+        if item is not None:
+            self._open_index_related_item(item)
+
+    def _preview_selected_index_related_item(self) -> None:
+        item = self.index_related_list.currentItem()
+        if item is None:
+            return
+        path = item.data(Qt.UserRole)
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.tabs.widget(5)))
+        self._load_preview(path)
+
+    def _show_index_workflow_artifacts(self) -> None:
+        workflow = self._current_index_workflow or {}
+        for path in (workflow.get("action_targets") or {}).get("artifact_paths") or []:
+            if self._select_artifact_path(path):
+                self.tabs.setCurrentIndex(self.tabs.indexOf(self.tabs.widget(5)))
+                return
+
+    def _show_index_workflow_sources(self) -> None:
+        workflow = self._current_index_workflow or {}
+        for path in (workflow.get("action_targets") or {}).get("recovered_source_paths") or []:
+            if self._select_source_path(path):
+                self.tabs.setCurrentIndex(self.tabs.indexOf(self.tabs.widget(6)))
+                return
+
+    def _open_index_porting_target(self) -> None:
+        workflow = self._current_index_workflow or {}
+        action_targets = workflow.get("action_targets") or {}
+        for path in [action_targets.get("porting_notes_path"), action_targets.get("prepared_sources_path")]:
+            if path:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+                return
+
+    def _open_index_recompile_target(self) -> None:
+        workflow = self._current_index_workflow or {}
+        action_targets = workflow.get("action_targets") or {}
+        for path in [action_targets.get("recompile_workspace_path"), action_targets.get("recompile_manifest_path")]:
+            if path:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+                return
+
+    def _select_artifact_path(self, path: str) -> bool:
+        for row in range(self.artifacts_list.count()):
+            item = self.artifacts_list.item(row)
+            if item.data(Qt.UserRole) == path:
+                self.artifacts_list.setCurrentItem(item)
+                return True
+        return False
+
+    def _select_source_path(self, path: str) -> bool:
+        for row in range(self.sources_tree.topLevelItemCount()):
+            item = self.sources_tree.topLevelItem(row)
+            if item.data(0, Qt.UserRole) == path:
+                self.sources_tree.setCurrentItem(item)
+                return True
+        return False
+
+    @staticmethod
+    def _format_attributes(attributes: dict) -> str:
+        preview = []
+        for key, value in list(attributes.items())[:4]:
+            preview.append(f"{key}={value}")
+        return ", ".join(preview)
+
+    @staticmethod
+    def _load_artifact_json(report: dict, description_contains: str) -> dict | None:
+        for artifact in report.get("artifacts") or []:
+            description = artifact.get("description", "")
+            path = artifact.get("path", "")
+            if description_contains.lower() not in description.lower():
+                continue
+            candidate = Path(path)
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8", errors="ignore"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                return payload
+        return None
 
 
 def main() -> int:

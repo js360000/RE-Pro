@@ -12,7 +12,7 @@ from tests import _path_setup  # noqa: F401
 
 from re_pro.analyzers.llm import LLMAssistAnalyzer
 from re_pro.engine import AnalysisContext
-from re_pro.llm_assist import run_llm_assist_job
+from re_pro.llm_assist import _dispatch_tool_call, run_llm_assist_job
 from re_pro.models import AnalysisReport, LlmAssistSettings
 
 
@@ -134,6 +134,44 @@ class LlmAssistTests(unittest.TestCase):
 
             self.assertTrue(any("LLM reconstruction completed" == finding.title for finding in report.findings))
             self.assertTrue((output_dir / "llm_assist" / "request.json").exists())
+
+    def test_index_tools_expose_entities_and_relations(self) -> None:
+        analysis_index = {
+            "entities": [
+                {"kind": "function", "key": "ghidra:0x401000", "label": "entry", "attributes": {"tool": "ghidra"}},
+                {"kind": "string", "key": "ghidra:0x402000", "label": "Success", "attributes": {"tool": "ghidra"}},
+            ],
+            "relations": [
+                {"source": "function:ghidra:0x401000", "predicate": "references", "target": "string:ghidra:0x402000", "attributes": {}},
+            ],
+        }
+
+        search_result = _dispatch_tool_call(
+            "search_index",
+            {"query": "success"},
+            context_items=[],
+            analysis_index=analysis_index,
+            reconstructed_root=Path.cwd(),
+            writes=[],
+            validations=[],
+            recompile_root=Path.cwd(),
+            settings={},
+        )
+        entity_result = _dispatch_tool_call(
+            "get_index_entity",
+            {"entity_id": "function:ghidra:0x401000"},
+            context_items=[],
+            analysis_index=analysis_index,
+            reconstructed_root=Path.cwd(),
+            writes=[],
+            validations=[],
+            recompile_root=Path.cwd(),
+            settings={},
+        )
+
+        self.assertEqual(search_result["matches"][0]["label"], "Success")
+        self.assertEqual(entity_result["entity"]["label"], "entry")
+        self.assertEqual(entity_result["relations"][0]["predicate"], "references")
 
 
 if __name__ == "__main__":

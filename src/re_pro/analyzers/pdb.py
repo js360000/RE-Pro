@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..symbol_acquisition import acquire_pdbs_from_symbol_servers, download_with_dotnet_symbol
 from ..tooling import resolve_command, run_command
 from ..utils import ensure_dir, safe_slug
 from .base import Analyzer
@@ -15,18 +16,27 @@ class PDBAnalyzer(Analyzer):
             return
 
         candidates = self._find_pdb_candidates(context)
+        output_dir = ensure_dir(context.output_dir / "pdb")
+        if not candidates:
+            candidates.extend(self._acquire_remote_candidates(context, output_dir, report))
+        if not candidates and context.pe_cli_metadata is not None:
+            self._attempt_dotnet_symbol_download(context, output_dir, report)
         if not candidates:
             if context.pe_codeview_records:
-                report.add_note("The PE debug directory references a PDB, but no matching local .pdb file was found beside the binary.")
+                report.add_note(
+                    "The PE debug directory references a PDB, but no matching local or remote .pdb file was recovered."
+                )
             return
 
-        output_dir = ensure_dir(context.output_dir / "pdb")
         for candidate in candidates:
-            report.add_artifact(str(candidate), "debug", "Recovered sibling PDB file")
+            description = "Recovered sibling PDB file"
+            if candidate.parent == output_dir:
+                description = "Downloaded PDB from remote symbol server"
+            report.add_artifact(str(candidate), "debug", description)
 
         report.add_finding(
             "PDB file recovered",
-            "A matching Program Database file was found beside the executable, which can materially improve native symbol and source reconstruction.",
+            "A matching Program Database file was recovered, which can materially improve native symbol and source reconstruction.",
             severity="info",
             details="; ".join(str(path.name) for path in candidates[:3]),
         )
@@ -42,6 +52,50 @@ class PDBAnalyzer(Analyzer):
             report.add_note(
                 "Install LLVM with `llvm-pdbutil` or register the Microsoft DIA SDK COM class to export PDB summaries automatically."
             )
+
+    def _acquire_remote_candidates(self, context, output_dir: Path, report) -> list[Path]:
+        downloads = acquire_pdbs_from_symbol_servers(
+            context.pe_codeview_records,
+            output_dir,
+            logger=context.log,
+        )
+        if not downloads:
+            return []
+        report.add_finding(
+            "Remote PDB acquired",
+            "RE-Pro downloaded a matching PDB from a configured symbol server using the PE CodeView GUID/age record.",
+            severity="info",
+            details="; ".join(
+                f"{Path(item['path']).name} via {item['server']}"
+                for item in downloads[:3]
+            ),
+        )
+        report.add_note(
+            "Downloaded remote debug symbols from: "
+            + ", ".join(dict.fromkeys(item["server"] for item in downloads if item.get("server")))
+            + "."
+        )
+        return [Path(item["path"]) for item in downloads]
+
+    def _attempt_dotnet_symbol_download(self, context, output_dir: Path, report) -> None:
+        destination = ensure_dir(output_dir / "dotnet-symbol")
+        result = download_with_dotnet_symbol(context.target, destination, logger=context.log)
+        if result is None:
+            return
+        if result.get("ok"):
+            report.add_artifact(str(destination), "debug", "dotnet-symbol download directory")
+            report.add_finding(
+                "dotnet-symbol completed",
+                "dotnet-symbol fetched external symbol artifacts for this managed or runtime-linked target.",
+                severity="info",
+            )
+            stdout = str(result.get("stdout", "")).strip()
+            if stdout:
+                report.add_note(f"dotnet-symbol output: {stdout[:600]}")
+        else:
+            stderr = str(result.get("stderr", "")).strip() or str(result.get("stdout", "")).strip()
+            if stderr:
+                report.add_note(f"dotnet-symbol did not recover symbols: {stderr[:600]}")
 
     def _find_pdb_candidates(self, context) -> list[Path]:
         expected_names: list[str] = []

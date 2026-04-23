@@ -47,6 +47,7 @@ class LLMAssistAnalyzer(Analyzer):
                 "run_recompile_checks": settings.run_recompile_checks,
             },
             "report": report.to_dict(),
+            "analysis_index": context.analysis_index.to_dict(),
             "context_items": context_items,
         }
         request_path.write_text(json.dumps(request_payload, indent=2), encoding="utf-8")
@@ -138,6 +139,11 @@ class LLMAssistAnalyzer(Analyzer):
                 indent=2,
             ),
             "Binary metadata, imports, sections, and version info.",
+        )
+        add_item(
+            "analysis_index.json",
+            json.dumps(context.analysis_index.to_dict(), indent=2),
+            "Unified analysis index snapshot with normalized entities and relations collected so far.",
         )
         if context.ascii_strings:
             add_item(

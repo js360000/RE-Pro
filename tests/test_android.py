@@ -80,6 +80,46 @@ class AndroidAnalyzerTests(unittest.TestCase):
             self.assertIn("Android APK", report.frameworks)
             self.assertEqual(len(report.recovered_sources), 1)
 
+    def test_aab_analysis_extracts_base_module_and_restores_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            aab_path = root / "bundle.aab"
+            with zipfile.ZipFile(aab_path, "w") as archive:
+                archive.writestr(
+                    "base/manifest/AndroidManifest.xml",
+                    """<?xml version="1.0" encoding="utf-8"?>
+                    <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.bundle">
+                      <application android:label="Bundle App" android:name="com.example.BundleApplication" />
+                    </manifest>
+                    """,
+                )
+                archive.writestr("base/dex/classes.dex", b"dex\n035\x00")
+                archive.writestr("base/resources.pb", b"\x0a\x01\x00")
+                archive.writestr("base/assets/www/app.js", "console.log('bundle');")
+                archive.writestr(
+                    "base/assets/www/app.js.map",
+                    json.dumps(
+                        {
+                            "version": 3,
+                            "file": "app.js",
+                            "sources": ["webpack:///src/bundle.ts"],
+                            "sourcesContent": ["console.log('bundle source');"],
+                        }
+                    ),
+                )
+                archive.writestr("feature_chat/manifest/AndroidManifest.xml", "<manifest package='com.example.bundle.chat' />")
+            engine = ReverseEngineeringEngine(output_root=root / "out")
+
+            report = engine.analyze(aab_path)
+
+            self.assertEqual(report.target_type, "android-app-bundle")
+            self.assertIn("Android App Bundle (.aab)", report.frameworks)
+            self.assertIn("Android framework: WebView bundle", report.frameworks)
+            self.assertTrue(any("Android package name: com.example.bundle" in note for note in report.notes))
+            self.assertTrue(any("Recovered 2 Android App Bundle module(s): base, feature_chat" in note for note in report.notes))
+            self.assertTrue(any("base module DEX files present: classes.dex" in note for note in report.notes))
+            self.assertEqual(len(report.recovered_sources), 1)
+
     def test_android_external_tools_run_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

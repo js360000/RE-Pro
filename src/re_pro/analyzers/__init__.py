@@ -12,11 +12,37 @@ from .pe import PEAnalyzer
 from .porting import PortingAdvisorAnalyzer
 from .python_packaged import PythonPackagedAnalyzer
 from .resources import PEResourceAnalyzer
+from .runtime_trace import RuntimeTraceAnalyzer
 from .tauri import TauriAnalyzer
+
+BUILTIN_ANALYZER_CLASSES = [
+    AndroidAnalyzer,
+    AppleAnalyzer,
+    PEAnalyzer,
+    PDBAnalyzer,
+    PEResourceAnalyzer,
+    InstallerAnalyzer,
+    ElectronAnalyzer,
+    TauriAnalyzer,
+    DotNetAnalyzer,
+    PythonPackagedAnalyzer,
+    NativeLanguageAnalyzer,
+    GameNativeAnalyzer,
+    ExternalToolAnalyzer,
+    RuntimeTraceAnalyzer,
+    LLMAssistAnalyzer,
+    PortingAdvisorAnalyzer,
+]
+
+
+def builtin_analyzers():
+    return [analyzer_class() for analyzer_class in BUILTIN_ANALYZER_CLASSES]
+
 
 __all__ = [
     "AndroidAnalyzer",
     "AppleAnalyzer",
+    "BUILTIN_ANALYZER_CLASSES",
     "DotNetAnalyzer",
     "ElectronAnalyzer",
     "ExternalToolAnalyzer",
@@ -30,4 +56,6 @@ __all__ = [
     "PortingAdvisorAnalyzer",
     "PythonPackagedAnalyzer",
     "TauriAnalyzer",
+    "RuntimeTraceAnalyzer",
+    "builtin_analyzers",
 ]

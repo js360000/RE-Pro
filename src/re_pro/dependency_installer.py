@@ -107,6 +107,14 @@ class DependencyInstaller:
                 "package_id": "ilspycmd",
                 "tool_path": "ilspycmd",
             },
+            {
+                "name": "dotnet-symbol",
+                "archive_name": "dotnet-symbol.tool",
+                "expected_leaf": "dotnet-symbol/dotnet-symbol.exe",
+                "kind": "dotnet-tool",
+                "package_id": "dotnet-symbol",
+                "tool_path": "dotnet-symbol",
+            },
         ]
 
     def _latest_temurin_21(self) -> dict[str, str]:

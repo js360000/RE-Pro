@@ -2,29 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
 from pathlib import Path
 import time
 from typing import Callable
 
-from .analyzers import (
-    AndroidAnalyzer,
-    AppleAnalyzer,
-    DotNetAnalyzer,
-    ElectronAnalyzer,
-    ExternalToolAnalyzer,
-    GameNativeAnalyzer,
-    InstallerAnalyzer,
-    LLMAssistAnalyzer,
-    NativeLanguageAnalyzer,
-    PDBAnalyzer,
-    PEAnalyzer,
-    PEResourceAnalyzer,
-    PortingAdvisorAnalyzer,
-    PythonPackagedAnalyzer,
-    TauriAnalyzer,
-)
+from .analysis_index import AnalysisIndex
+from .index_ingest import ingest_structured_artifacts
 from .models import AnalysisReport
 from .models import LlmAssistSettings
+from .models import RuntimeTraceSettings
+from .plugins import build_analyzers, resolve_plugin_dirs
 from .reporting import write_json_report, write_markdown_report
 from .elf import (
     parse_elf_interpreter,
@@ -54,6 +42,7 @@ class AnalysisContext:
     target: Path
     output_dir: Path
     logger: Callable[[str], None] | None = None
+    analysis_index: AnalysisIndex = field(default_factory=AnalysisIndex)
     binary_head: bytes = b""
     ascii_strings: list[str] = field(default_factory=list)
     pe_metadata: dict[str, object] | None = None
@@ -72,6 +61,7 @@ class AnalysisContext:
     run_external_tools: bool = False
     run_ghidra: bool = False
     llm_settings: LlmAssistSettings = field(default_factory=LlmAssistSettings)
+    runtime_trace_settings: RuntimeTraceSettings = field(default_factory=RuntimeTraceSettings)
 
     def log(self, message: str) -> None:
         if self.logger:
@@ -87,29 +77,17 @@ class ReverseEngineeringEngine:
         run_external_tools: bool = False,
         run_ghidra: bool = False,
         llm_settings: LlmAssistSettings | None = None,
+        runtime_trace_settings: RuntimeTraceSettings | None = None,
+        plugin_dirs: list[str | Path] | None = None,
     ) -> None:
         self.output_root = Path(output_root).resolve() if output_root else (Path.cwd() / "analysis_output").resolve()
         self.logger = logger
         self.run_external_tools = run_external_tools
         self.run_ghidra = run_ghidra
         self.llm_settings = llm_settings or LlmAssistSettings()
-        self.analyzers = [
-            AndroidAnalyzer(),
-            AppleAnalyzer(),
-            PEAnalyzer(),
-            PDBAnalyzer(),
-            PEResourceAnalyzer(),
-            InstallerAnalyzer(),
-            ElectronAnalyzer(),
-            TauriAnalyzer(),
-            DotNetAnalyzer(),
-            PythonPackagedAnalyzer(),
-            NativeLanguageAnalyzer(),
-            GameNativeAnalyzer(),
-            ExternalToolAnalyzer(),
-            LLMAssistAnalyzer(),
-            PortingAdvisorAnalyzer(),
-        ]
+        self.runtime_trace_settings = runtime_trace_settings or RuntimeTraceSettings()
+        self.plugin_dirs = resolve_plugin_dirs(plugin_dirs)
+        self.analyzers = build_analyzers(plugin_dirs=self.plugin_dirs, logger=self.logger)
 
     def analyze(self, target: str | Path) -> AnalysisReport:
         target_path = Path(target).resolve()
@@ -124,6 +102,7 @@ class ReverseEngineeringEngine:
             run_external_tools=self.run_external_tools,
             run_ghidra=self.run_ghidra,
             llm_settings=self.llm_settings,
+            runtime_trace_settings=self.runtime_trace_settings,
         )
         report = AnalysisReport(target=str(target_path), output_dir=str(output_dir))
 
@@ -148,6 +127,7 @@ class ReverseEngineeringEngine:
             context.probable_binary = is_probable_binary(target_path, context.binary_head)
             if report.target_type == "file" and context.elf_metadata is not None:
                 report.target_type = "elf"
+        self._seed_analysis_index(context, report)
 
         self._log(f"Starting analysis for {target_path}")
         for analyzer in self.analyzers:
@@ -156,6 +136,8 @@ class ReverseEngineeringEngine:
             analyzer.analyze(context, report)
             self._log(f"Completed analyzer: {analyzer.name} in {time.monotonic() - started:.1f}s")
 
+        self._write_pipeline_manifest(report, output_dir)
+        self._write_analysis_index(context, report, output_dir)
         report_json = write_json_report(report, output_dir / "report.json")
         report_markdown = write_markdown_report(report, output_dir / "report.md")
         report.add_artifact(str(report_json), "report", "Machine-readable JSON report")
@@ -168,6 +150,165 @@ class ReverseEngineeringEngine:
     def _create_output_dir(self, target_path: Path) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return ensure_dir(self.output_root / f"{safe_slug(target_path.stem)}_{timestamp}")
+
+    def _write_pipeline_manifest(self, report: AnalysisReport, output_dir: Path) -> None:
+        manifest_path = output_dir / "analysis_pipeline.json"
+        payload = {
+            "analyzers": [
+                {
+                    "name": analyzer.name,
+                    "class": analyzer.__class__.__name__,
+                    "module": analyzer.__class__.__module__,
+                }
+                for analyzer in self.analyzers
+            ],
+            "plugin_dirs": [str(path) for path in self.plugin_dirs],
+        }
+        manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        report.add_artifact(str(manifest_path), "manifest", "Analysis pipeline manifest")
+
+    def _seed_analysis_index(self, context: AnalysisContext, report: AnalysisReport) -> None:
+        target_id = context.analysis_index.ensure_target(str(context.target), report.target_type)
+        if context.pe_metadata is not None:
+            pe_id = context.analysis_index.add_entity(
+                "format",
+                f"pe:{context.target.name}",
+                "Portable Executable",
+                attributes={
+                    "machine": context.pe_metadata.get("machine"),
+                    "sections": context.pe_metadata.get("sections"),
+                    "number_of_sections": context.pe_metadata.get("number_of_sections"),
+                },
+            )
+            context.analysis_index.add_relation(target_id, "has_format", pe_id)
+            for name in context.pe_imports:
+                import_id = context.analysis_index.add_entity("import", name.lower(), name, attributes={"family": "pe"})
+                context.analysis_index.add_relation(target_id, "imports", import_id)
+            for section in context.pe_sections:
+                name = str(section.get("name", "")).strip()
+                if not name:
+                    continue
+                section_id = context.analysis_index.add_entity(
+                    "section",
+                    f"pe:{name}",
+                    name,
+                    attributes=section,
+                )
+                context.analysis_index.add_relation(target_id, "contains_section", section_id)
+        if context.elf_metadata is not None:
+            elf_id = context.analysis_index.add_entity(
+                "format",
+                f"elf:{context.target.name}",
+                "ELF",
+                attributes=context.elf_metadata,
+            )
+            context.analysis_index.add_relation(target_id, "has_format", elf_id)
+            for section in context.elf_sections:
+                name = str(section.get("name", "")).strip()
+                if not name:
+                    continue
+                section_id = context.analysis_index.add_entity(
+                    "section",
+                    f"elf:{name}",
+                    name,
+                    attributes=section,
+                )
+                context.analysis_index.add_relation(target_id, "contains_section", section_id)
+            for library in context.elf_needed_libraries:
+                library_id = context.analysis_index.add_entity("import", library.lower(), library, attributes={"family": "elf"})
+                context.analysis_index.add_relation(target_id, "imports", library_id)
+        if context.pe_cli_metadata is not None:
+            cli_id = context.analysis_index.add_entity(
+                "managed_metadata",
+                f"cli:{context.target.name}",
+                ".NET CLR metadata",
+                attributes={
+                    "runtime_version": context.pe_cli_metadata.get("runtime_version"),
+                    "metadata_version": context.pe_cli_metadata.get("metadata_version"),
+                    "flags": context.pe_cli_metadata.get("flags"),
+                    "streams": context.pe_cli_metadata.get("metadata_streams"),
+                },
+            )
+            context.analysis_index.add_relation(target_id, "has_managed_metadata", cli_id)
+        if context.version_info:
+            version_id = context.analysis_index.add_entity(
+                "version_info",
+                context.target.name.lower(),
+                context.target.name,
+                attributes=context.version_info,
+            )
+            context.analysis_index.add_relation(target_id, "has_version_info", version_id)
+        for record in context.pe_codeview_records:
+            pdb_path = str(record.get("pdb_path", "")).strip()
+            if not pdb_path:
+                continue
+            debug_id = context.analysis_index.add_entity(
+                "debug_reference",
+                pdb_path.lower(),
+                pdb_path,
+                attributes=record,
+            )
+            context.analysis_index.add_relation(target_id, "references_debug_artifact", debug_id)
+
+    def _write_analysis_index(self, context: AnalysisContext, report: AnalysisReport, output_dir: Path) -> None:
+        target_id = context.analysis_index.ensure_target(str(context.target), report.target_type)
+        for framework in report.frameworks:
+            framework_id = context.analysis_index.add_entity("framework", framework.lower(), framework)
+            context.analysis_index.add_relation(target_id, "matches_framework", framework_id)
+        for finding in report.findings:
+            finding_id = context.analysis_index.add_entity(
+                "finding",
+                finding.title.lower(),
+                finding.title,
+                attributes={
+                    "severity": finding.severity,
+                    "summary": finding.summary,
+                    "details": finding.details,
+                },
+            )
+            context.analysis_index.add_relation(target_id, "has_finding", finding_id)
+        for artifact in report.artifacts:
+            artifact_id = context.analysis_index.add_entity(
+                "artifact",
+                artifact.path,
+                artifact.description,
+                attributes={
+                    "path": artifact.path,
+                    "category": artifact.category,
+                    "description": artifact.description,
+                },
+            )
+            context.analysis_index.add_relation(target_id, "produced_artifact", artifact_id)
+        for source in report.recovered_sources:
+            source_id = context.analysis_index.add_entity(
+                "recovered_source",
+                source.restored_path,
+                source.original_path,
+                attributes={
+                    "original_path": source.original_path,
+                    "restored_path": source.restored_path,
+                    "source_map": source.source_map,
+                },
+            )
+            context.analysis_index.add_relation(target_id, "recovered_source", source_id)
+
+        ingest_summary = ingest_structured_artifacts(context.analysis_index, report)
+        if ingest_summary["indexed_functions"] or ingest_summary["indexed_strings"]:
+            report.add_note(
+                "Unified analysis index normalized "
+                f"{ingest_summary['indexed_functions']} function candidate(s) and "
+                f"{ingest_summary['indexed_strings']} string candidate(s) from structured tool exports."
+            )
+        if ingest_summary["correlated_functions"] or ingest_summary["correlated_strings"]:
+            report.add_note(
+                "Cross-tool correlation linked "
+                f"{ingest_summary['correlated_functions']} function address match(es) and "
+                f"{ingest_summary['correlated_strings']} string address match(es)."
+            )
+
+        index_path = output_dir / "analysis_index.json"
+        index_path.write_text(json.dumps(context.analysis_index.to_dict(), indent=2), encoding="utf-8")
+        report.add_artifact(str(index_path), "manifest", "Unified analysis index")
 
     def _log(self, message: str) -> None:
         if self.logger:

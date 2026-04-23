@@ -56,6 +56,7 @@ def run_llm_assist_job(
     try:
         client = client_factory() if client_factory else _default_client_factory()
         context_items = payload.get("context_items") or []
+        analysis_index = payload.get("analysis_index") or {}
         settings = payload.get("settings") or {}
         tools = _tool_specs()
         writes: list[dict[str, Any]] = []
@@ -87,6 +88,7 @@ def run_llm_assist_job(
                     tool_name,
                     arguments,
                     context_items=context_items,
+                    analysis_index=analysis_index,
                     reconstructed_root=reconstructed_root,
                     writes=writes,
                     validations=validations,
@@ -153,6 +155,7 @@ def _build_instructions(payload: dict[str, Any]) -> str:
     return (
         "You are assisting a reverse-engineering and platform-porting workflow. "
         "Inspect the provided context using tools before making strong claims. "
+        "Use the analysis index tools to inspect normalized frameworks, artifacts, functions, strings, and cross-tool correlations before falling back to raw files. "
         "Create a small number of high-value reconstructed files instead of spraying low-value boilerplate. "
         "Do not invent APIs, imports, or files unless you can tie them to concrete evidence from context items, manifests, imports, strings, or prior reconstructed files. "
         "Every reconstructed file must include evidence_refs naming the context items or search hits it came from, plus a confidence value. "
@@ -185,6 +188,7 @@ def _build_user_input(payload: dict[str, Any]) -> str:
         f"- Findings: {len(report.get('findings') or [])}\n"
         f"- Artifacts: {len(report.get('artifacts') or [])}\n"
         f"- Recovered sources: {len(report.get('recovered_sources') or [])}\n"
+        f"- Analysis index entities: {sum((report.get('analysis_index_summary') or {}).get('entity_counts', {}).values()) if isinstance(report.get('analysis_index_summary'), dict) else 'unknown'}\n"
     )
     return base_task
 
@@ -227,6 +231,48 @@ def _tool_specs() -> list[dict[str, Any]]:
                     "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
                 },
                 "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "name": "list_index_entities",
+            "description": "List normalized entities from the unified analysis index, optionally filtered by kind.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "name": "search_index",
+            "description": "Search the unified analysis index across entity labels, keys, and string values.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "name": "get_index_entity",
+            "description": "Fetch one entity and its immediate relations from the unified analysis index.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {"type": "string"},
+                    "relation_limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                },
+                "required": ["entity_id"],
                 "additionalProperties": False,
             },
         },
@@ -323,6 +369,7 @@ def _dispatch_tool_call(
     arguments: dict[str, Any],
     *,
     context_items: list[dict[str, Any]],
+    analysis_index: dict[str, Any],
     reconstructed_root: Path,
     writes: list[dict[str, Any]],
     validations: list[dict[str, Any]],
@@ -332,6 +379,51 @@ def _dispatch_tool_call(
 ) -> dict[str, Any]:
     if name == "list_context_items":
         return {"items": context_items}
+    if name == "list_index_entities":
+        kind = str(arguments.get("kind", "")).strip().lower()
+        limit = int(arguments.get("limit", 50))
+        entities = analysis_index.get("entities") or []
+        if kind:
+            entities = [entity for entity in entities if str(entity.get("kind", "")).lower() == kind]
+        return {"entities": entities[:limit]}
+    if name == "search_index":
+        query = str(arguments.get("query", "")).strip().lower()
+        kind = str(arguments.get("kind", "")).strip().lower()
+        limit = int(arguments.get("limit", 20))
+        if not query:
+            return {"matches": []}
+        matches: list[dict[str, Any]] = []
+        for entity in analysis_index.get("entities") or []:
+            if kind and str(entity.get("kind", "")).lower() != kind:
+                continue
+            haystacks = [
+                str(entity.get("label", "")),
+                str(entity.get("key", "")),
+                json.dumps(entity.get("attributes") or {}, ensure_ascii=False),
+            ]
+            if not any(query in haystack.lower() for haystack in haystacks):
+                continue
+            matches.append(entity)
+            if len(matches) >= limit:
+                break
+        return {"matches": matches}
+    if name == "get_index_entity":
+        entity_id = str(arguments.get("entity_id", "")).strip()
+        relation_limit = int(arguments.get("relation_limit", 50))
+        entity = None
+        for candidate in analysis_index.get("entities") or []:
+            candidate_id = f"{candidate.get('kind')}:{candidate.get('key')}"
+            if candidate_id == entity_id:
+                entity = candidate
+                break
+        if entity is None:
+            return {"error": f"Unknown entity {entity_id!r}"}
+        related = [
+            relation
+            for relation in analysis_index.get("relations") or []
+            if relation.get("source") == entity_id or relation.get("target") == entity_id
+        ][:relation_limit]
+        return {"entity": entity, "relations": related}
     if name == "read_context_item":
         item = _find_context_item(context_items, arguments.get("name", ""))
         if item is None:

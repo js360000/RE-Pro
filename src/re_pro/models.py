@@ -18,6 +18,13 @@ class LlmAssistSettings:
 
 
 @dataclass
+class RuntimeTraceSettings:
+    enabled: bool = False
+    duration_seconds: int = 8
+    use_frida: bool = True
+
+
+@dataclass
 class AnalysisFinding:
     title: str
     summary: str

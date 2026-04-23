@@ -1,0 +1,14 @@
+from re_pro.analyzers.base import Analyzer
+
+
+class ExampleAnalyzer(Analyzer):
+    name = "Example plugin analyzer"
+
+    def analyze(self, context, report) -> None:
+        if context.target.suffix.lower() == ".example":
+            report.add_framework("Example plugin format")
+            report.add_note("This finding came from a local analyzer plugin.")
+
+
+def register_analyzers():
+    return [ExampleAnalyzer()]

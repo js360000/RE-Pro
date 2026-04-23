@@ -88,6 +88,7 @@ class ExternalToolAnalyzer(Analyzer):
         if not log_path.exists():
             log_path.write_text((stdout or "") + ("\n" + stderr if stderr else ""), encoding="utf-8", errors="ignore")
         if code == 0:
+            self._record_tool_execution(context, "ghidra", str(log_path), "Ghidra headless analysis")
             report.add_artifact(str(project_root), "ghidra", "Ghidra headless project")
             report.add_artifact(str(log_path), "log", "Ghidra headless log")
             if script_log_path.exists():
@@ -220,8 +221,22 @@ class ExternalToolAnalyzer(Analyzer):
             return False
         destination.write_text(stdout, encoding="utf-8", errors="ignore")
         report.add_artifact(str(destination), category, description)
+        ExternalToolAnalyzer._record_tool_execution(context, Path(command[0]).stem.lower(), str(destination), description)
         context.log(f"Wrote {description} to {destination}")
         return True
+
+    @staticmethod
+    def _record_tool_execution(context, tool_name: str, output_path: str, description: str) -> None:
+        target_id = context.analysis_index.make_id("target", str(context.target))
+        tool_id = context.analysis_index.add_entity("tool", tool_name, tool_name, attributes={"kind": "external_re_tool"})
+        output_id = context.analysis_index.add_entity(
+            "artifact",
+            output_path,
+            description,
+            attributes={"path": output_path, "category": "tool_output", "description": description},
+        )
+        context.analysis_index.add_relation(target_id, "analyzed_with", tool_id)
+        context.analysis_index.add_relation(tool_id, "produced_artifact", output_id)
 
     @staticmethod
     def _should_force_ghidra(context, report) -> bool:

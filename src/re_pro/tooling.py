@@ -71,6 +71,9 @@ COMMON_WINDOWS_PATTERNS: dict[str, list[str]] = {
     "llvm-pdbutil": [
         r"C:\Program Files\LLVM\bin\llvm-pdbutil.exe",
     ],
+    "dotnet-symbol": [
+        str(Path.home() / ".dotnet" / "tools" / "dotnet-symbol.exe"),
+    ],
 }
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -156,6 +159,14 @@ LOCAL_TOOL_GLOBS: dict[str, list[str]] = {
     ],
     "llvm-pdbutil": [
         "LLVM*/bin/llvm-pdbutil.exe",
+    ],
+    "dotnet-symbol": [
+        "dotnet-symbol/dotnet-symbol.exe",
+        "dotnet-symbol*/dotnet-symbol.exe",
+    ],
+    "dotnet-symbol.exe": [
+        "dotnet-symbol/dotnet-symbol.exe",
+        "dotnet-symbol*/dotnet-symbol.exe",
     ],
 }
 

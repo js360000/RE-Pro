@@ -20,6 +20,14 @@ class PEResourceAnalyzer(Analyzer):
         report.add_artifact(str(manifest_path), "manifest", "PE resource manifest")
         type_counts = Counter(entry.type_name for entry in entries)
         summary = ", ".join(f"{resource_type}={count}" for resource_type, count in type_counts.most_common(8))
+        target_id = context.analysis_index.make_id("target", str(context.target))
+        manifest_id = context.analysis_index.add_entity(
+            "artifact",
+            str(manifest_path),
+            "PE resource manifest",
+            attributes={"path": str(manifest_path), "category": "manifest"},
+        )
+        context.analysis_index.add_relation(target_id, "produced_artifact", manifest_id)
         report.add_finding(
             "PE resources extracted",
             f"Recovered {len(entries)} embedded Windows resources.",
@@ -47,3 +55,16 @@ class PEResourceAnalyzer(Analyzer):
                 continue
             counts[entry.type_name] = current + 1
             report.add_artifact(entry.path, "resource", f"{entry.type_name} resource: {entry.name} (lang {entry.language})")
+            resource_id = context.analysis_index.add_entity(
+                "resource",
+                entry.path,
+                f"{entry.type_name} {entry.name}",
+                attributes={
+                    "type": entry.type_name,
+                    "name": entry.name,
+                    "language": entry.language,
+                    "path": entry.path,
+                },
+            )
+            context.analysis_index.add_relation(target_id, "contains_resource", resource_id)
+            context.analysis_index.add_relation(manifest_id, "indexes_resource", resource_id)

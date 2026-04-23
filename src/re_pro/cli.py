@@ -8,7 +8,9 @@ from pathlib import Path
 from .dependency_installer import DependencyInstaller
 from .engine import ReverseEngineeringEngine
 from .llm_assist import run_llm_assist_job
+from .mcp_server import main as mcp_server_main
 from .models import LlmAssistSettings
+from .models import RuntimeTraceSettings
 from .tooling import resolve_command, run_command_logged
 
 
@@ -19,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = subparsers.add_parser("analyze", help="Analyze a file or directory")
     analyze.add_argument("target", help="Executable or app directory to analyze")
     analyze.add_argument("-o", "--output", default="analysis_output", help="Output root directory")
+    analyze.add_argument("--plugin-dir", action="append", default=[], help="Additional analyzer plugin directory to load (.py plugins)")
     analyze.add_argument("--json", action="store_true", help="Print the final JSON report to stdout")
     analyze.add_argument("--external-tools", action="store_true", help="Run installed rizin/radare2 export passes")
     analyze.add_argument("--ghidra", action="store_true", help="Run the slower Ghidra headless import/export step")
@@ -32,9 +35,21 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--llm-task", default="", help="Optional operator steering prompt for the GPT-assisted pass")
     analyze.add_argument("--llm-no-install", action="store_true", help="Disallow the GPT-assisted pass from installing missing dependencies in its recompile workspace")
     analyze.add_argument("--llm-no-build-checks", action="store_true", help="Disallow the GPT-assisted pass from running validation/recompile commands")
+    analyze.add_argument("--runtime-trace", action="store_true", help="Run a bounded runtime observation pass")
+    analyze.add_argument("--trace-seconds", type=int, default=8, help="Maximum runtime trace duration in seconds")
+    analyze.add_argument("--trace-no-frida", action="store_true", help="Disable Frida-based runtime hooks during the runtime trace pass")
 
     install_tools = subparsers.add_parser("install-tools", help="Download portable reverse-engineering dependencies")
     install_tools.add_argument("--tools-root", default="tools", help="Installation root for downloaded tools")
+
+    mcp_server = subparsers.add_parser("mcp-server", help="Run the RE-Pro MCP server")
+    mcp_server.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
+    mcp_server.add_argument("--host", default="127.0.0.1", help="Host for HTTP-based MCP transports")
+    mcp_server.add_argument("--port", type=int, default=8000, help="Port for HTTP-based MCP transports")
+    mcp_server.add_argument("--workspace-root", default=".", help="Workspace root exposed by the MCP server")
+    mcp_server.add_argument("--output-root", default="analysis_output", help="Default analysis output root")
+    mcp_server.add_argument("--tools-root", default="tools", help="Local tooling root")
+    mcp_server.add_argument("--plugin-dir", action="append", default=[], help="Additional analyzer plugin directory to load (.py plugins)")
 
     android_jadx_job = subparsers.add_parser("android-jadx-job", help=argparse.SUPPRESS)
     android_jadx_job.add_argument("--apk", required=True, help="APK file to decompile with JADX")
@@ -56,6 +71,7 @@ def main() -> int:
             logger=print,
             run_external_tools=args.external_tools or args.ghidra,
             run_ghidra=args.ghidra,
+            plugin_dirs=args.plugin_dir,
             llm_settings=LlmAssistSettings(
                 enabled=args.llm,
                 auto=args.llm_auto,
@@ -67,6 +83,11 @@ def main() -> int:
                 user_task=args.llm_task,
                 allow_dependency_installs=not args.llm_no_install,
                 run_recompile_checks=not args.llm_no_build_checks,
+            ),
+            runtime_trace_settings=RuntimeTraceSettings(
+                enabled=args.runtime_trace,
+                duration_seconds=max(1, args.trace_seconds),
+                use_frida=not args.trace_no_frida,
             ),
         )
         report = engine.analyze(args.target)
@@ -80,6 +101,24 @@ def main() -> int:
         result = installer.install_all()
         print(json.dumps(result, indent=2))
         return 0
+    if args.command == "mcp-server":
+        mcp_args = [
+            "--transport",
+            args.transport,
+            "--host",
+            args.host,
+            "--port",
+            str(args.port),
+            "--workspace-root",
+            str(Path(args.workspace_root).resolve()),
+            "--output-root",
+            str(Path(args.output_root).resolve()),
+            "--tools-root",
+            str(Path(args.tools_root).resolve()),
+        ]
+        for plugin_dir in args.plugin_dir:
+            mcp_args.extend(["--plugin-dir", str(Path(plugin_dir).resolve())])
+        return mcp_server_main(mcp_args)
     if args.command == "android-jadx-job":
         return _run_android_jadx_job(Path(args.apk), Path(args.output), args.jobs)
     if args.command == "llm-job":

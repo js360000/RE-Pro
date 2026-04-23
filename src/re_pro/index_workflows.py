@@ -141,6 +141,10 @@ def _build_action_targets(report: dict, artifact_candidates: list[dict], recover
         "prepared_sources_path": _find_artifact_path(report, "Prepared sources for porting work"),
         "recompile_workspace_path": _find_artifact_path(report, "Recompile workspace"),
         "recompile_manifest_path": _find_artifact_path(report, "Recompile workspace manifest"),
+        "rebuild_plan_path": _find_artifact_path(report, "Rebuild plan"),
+        "signing_plan_path": _find_artifact_path(report, "Signing plan"),
+        "patch_plan_path": _find_artifact_path(report, "Patch plan"),
+        "project_template_paths": _find_artifact_paths(report, "Project template:"),
         "llm_summary_path": _find_artifact_path(report, "LLM reconstruction summary"),
     }
 
@@ -164,6 +168,8 @@ def _build_workflow_summary(
         lines.append("Porting guidance available.")
     if action_targets.get("recompile_workspace_path"):
         lines.append("Recompile workspace available.")
+    if action_targets.get("project_template_paths"):
+        lines.append("Project templates available.")
     label = str(entity.get("label", "")).lower()
     kind = str(entity.get("kind", "")).lower()
     if kind in {"function", "string"}:
@@ -183,6 +189,15 @@ def _find_artifact_path(report: dict, description_contains: str) -> str | None:
         if lowered in str(artifact.get("description", "")).lower():
             return str(artifact.get("path", ""))
     return None
+
+
+def _find_artifact_paths(report: dict, description_contains: str) -> list[str]:
+    lowered = description_contains.lower()
+    return [
+        str(artifact.get("path", ""))
+        for artifact in report.get("artifacts") or []
+        if lowered in str(artifact.get("description", "")).lower()
+    ]
 
 
 def _path_from_entity(entity: dict) -> str | None:

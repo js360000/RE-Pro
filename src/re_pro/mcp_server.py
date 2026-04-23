@@ -17,6 +17,7 @@ from mcp.types import (
     TextContent,
 )
 
+from .analysis_diff import compare_analysis_runs
 from .dependency_installer import DependencyInstaller
 from .engine import ReverseEngineeringEngine
 from .plugins import build_analyzers, resolve_plugin_dirs
@@ -207,6 +208,15 @@ def build_mcp_server(
     )
     def list_analysis_runs(limit: int = 50) -> dict[str, Any]:
         return {"runs": _list_analysis_runs(state, limit=max(1, min(limit, 200)))}
+
+    @server.tool(
+        name="compare_analysis_runs",
+        description="Compare two analysis runs and optionally emit a JSON/Markdown diff bundle.",
+        structured_output=True,
+    )
+    def compare_analysis_runs_tool(base_run_output_dir: str, head_run_output_dir: str, output_dir: str = "") -> dict[str, Any]:
+        destination = Path(output_dir).resolve() if output_dir.strip() else None
+        return compare_analysis_runs(Path(base_run_output_dir), Path(head_run_output_dir), destination)
 
     @server.tool(
         name="read_report",

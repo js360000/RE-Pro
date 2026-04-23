@@ -51,6 +51,7 @@ The current build supports:
 - JavaScript source map restoration using `sourcesContent`.
 - Porting-preparation output that copies recovered sources/manifests into a dedicated `porting/` workspace with platform recommendations.
 - Recompile workspaces with detected toolchains and prepared source/manifests for iterative rebuild attempts.
+- Recompile workspaces with generated Android Studio/Xcode/Node/CMake project templates, rebuild plans, signing plans, and patch plans for iterative rebuild attempts.
 - Optional GPT-5.4-assisted reconstruction through the OpenAI Responses API, with configurable reasoning effort, verbosity, background execution, operator steering, grounded evidence references, immediate validation hooks, and local tool-driven context inspection.
 - MCP server support over `stdio`, `sse`, and `streamable-http`, exposing RE-Pro analysis, analysis-index search, artifact/source reading, rebuild tooling, and client-sampling-backed approximation workflows to external LLM clients.
 - .NET framework heuristics for WinForms, WPF, Avalonia, MAUI, Unity managed, ASP.NET Core, and Blazor.
@@ -101,6 +102,12 @@ python -m pip install -e .
 
 ```bash
 re-pro analyze path\to\target.exe -o analysis_output
+```
+
+To compare two existing analysis runs and emit a diff bundle:
+
+```bash
+re-pro compare-runs path\to\base_run path\to\head_run -o diff_output
 ```
 
 To load extra local analyzer plugins from another directory:
@@ -201,6 +208,7 @@ The MCP surface exposes:
 - Run discovery and inspection through `list_analysis_runs`, `read_report`, `read_analysis_index`, `search_analysis_index`, and `get_index_entity`.
 - Artifact and recovered-source browsing through `list_artifacts`, `list_recovered_sources`, and `read_output_file`.
 - Rebuild workspace preparation and validation through `prepare_recompile_workspace`, `inspect_toolchains`, `install_project_dependency`, `run_project_command`, `write_reconstruction_file`, and `validate_reconstruction_file`.
+- Run-to-run comparison through `compare_analysis_runs`.
 - A client-side sampling workflow through `approximate_source_with_sampling`, which uses MCP `sampling/createMessage` when the connected client advertises sampling support.
 
 The server also exposes MCP resources and prompts:

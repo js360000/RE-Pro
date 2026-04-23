@@ -50,6 +50,19 @@ class PortingAdvisorAnalyzer(Analyzer):
         report.add_artifact(str(prepared_dir), "directory", "Prepared sources for porting work")
         report.add_artifact(str(recompile_root), "directory", "Recompile workspace")
         report.add_artifact(str(recompile_root / "workspace_manifest.json"), "manifest", "Recompile workspace manifest")
+        for template in recompile_metadata.get("project_templates") or []:
+            template_path = str(template.get("path", "")).strip()
+            template_name = str(template.get("name", "")).strip() or "project template"
+            if template_path:
+                report.add_artifact(template_path, "directory", f"Project template: {template_name}")
+        for key, description in (
+            ("rebuild_plan_path", "Rebuild plan"),
+            ("signing_plan_path", "Signing plan"),
+            ("patch_plan_path", "Patch plan"),
+        ):
+            path = str(recompile_metadata.get(key, "")).strip()
+            if path:
+                report.add_artifact(path, "manifest", description)
         report.add_finding(
             "Porting preparation generated",
             "RE-Pro generated a prepared source bundle and platform-porting guidance from the recovered analysis artifacts.",
@@ -198,7 +211,14 @@ class PortingAdvisorAnalyzer(Analyzer):
         lines.append("- Start from `prepared_sources/` to avoid re-triaging the full analysis tree.")
         lines.append("- Prefer recovered original sources over reconstructed LLM files when both exist.")
         lines.append("- Treat updater integrations, IPC, filesystem paths, OS credential storage, and native plugins as the first portability blockers.")
+        lines.append("- Use the generated project templates and rebuild/signing manifests under `recompile/` as the first build-oriented starting point.")
         if manifest["entrypoint_candidates"]:
             lines.extend(["", "## Entrypoint Candidates", ""])
             lines.extend(f"- `{candidate}`" for candidate in manifest["entrypoint_candidates"])
+        workspace = manifest.get("recompile_workspace") or {}
+        templates = workspace.get("project_templates") or []
+        if templates:
+            lines.extend(["", "## Project Templates", ""])
+            for template in templates:
+                lines.append(f"- `{template.get('name')}` -> `{template.get('path')}`")
         return "\n".join(lines) + "\n"

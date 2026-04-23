@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from .utils import ensure_dir
+
+
+def compare_analysis_runs(base_run_dir: Path, head_run_dir: Path, output_dir: Path | None = None) -> dict[str, Any]:
+    base_run_dir = base_run_dir.resolve()
+    head_run_dir = head_run_dir.resolve()
+    base_report = _load_json(base_run_dir / "report.json")
+    head_report = _load_json(head_run_dir / "report.json")
+    base_index = _load_json(base_run_dir / "analysis_index.json")
+    head_index = _load_json(head_run_dir / "analysis_index.json")
+
+    diff = {
+        "base_run_dir": str(base_run_dir),
+        "head_run_dir": str(head_run_dir),
+        "target_pair": {
+            "base": base_report.get("target"),
+            "head": head_report.get("target"),
+        },
+        "frameworks": _list_delta(base_report.get("frameworks") or [], head_report.get("frameworks") or []),
+        "findings": _list_delta(
+            [finding.get("title") for finding in (base_report.get("findings") or []) if finding.get("title")],
+            [finding.get("title") for finding in (head_report.get("findings") or []) if finding.get("title")],
+        ),
+        "recovered_sources": _list_delta(
+            [source.get("original_path") for source in (base_report.get("recovered_sources") or []) if source.get("original_path")],
+            [source.get("original_path") for source in (head_report.get("recovered_sources") or []) if source.get("original_path")],
+        ),
+        "artifacts": {
+            "base_count": len(base_report.get("artifacts") or []),
+            "head_count": len(head_report.get("artifacts") or []),
+            "delta": len(head_report.get("artifacts") or []) - len(base_report.get("artifacts") or []),
+        },
+        "analysis_index": _compare_analysis_index(base_index, head_index),
+    }
+
+    summary_lines = [
+        f"Base: {base_run_dir}",
+        f"Head: {head_run_dir}",
+        f"Frameworks added: {len(diff['frameworks']['added'])}",
+        f"Frameworks removed: {len(diff['frameworks']['removed'])}",
+        f"Recovered sources added: {len(diff['recovered_sources']['added'])}",
+        f"Recovered sources removed: {len(diff['recovered_sources']['removed'])}",
+        f"Analysis-index entity delta: {diff['analysis_index']['entity_delta']}",
+    ]
+    diff["summary"] = "\n".join(summary_lines)
+
+    if output_dir is not None:
+        output_dir = ensure_dir(output_dir.resolve())
+        json_path = output_dir / "analysis_diff.json"
+        md_path = output_dir / "analysis_diff.md"
+        json_path.write_text(json.dumps(diff, indent=2), encoding="utf-8")
+        md_path.write_text(_render_diff_markdown(diff), encoding="utf-8")
+        diff["json_path"] = str(json_path)
+        diff["markdown_path"] = str(md_path)
+
+    return diff
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected JSON object in {path}")
+    return payload
+
+
+def _list_delta(base_items: list[Any], head_items: list[Any]) -> dict[str, list[Any]]:
+    base_set = {item for item in base_items if item not in (None, "")}
+    head_set = {item for item in head_items if item not in (None, "")}
+    return {
+        "added": sorted(head_set - base_set),
+        "removed": sorted(base_set - head_set),
+        "unchanged_count": len(base_set & head_set),
+    }
+
+
+def _compare_analysis_index(base_index: dict[str, Any], head_index: dict[str, Any]) -> dict[str, Any]:
+    base_entities = base_index.get("entities") or []
+    head_entities = head_index.get("entities") or []
+    base_relations = base_index.get("relations") or []
+    head_relations = head_index.get("relations") or []
+
+    base_entity_ids = {f"{entity.get('kind')}:{entity.get('key')}" for entity in base_entities}
+    head_entity_ids = {f"{entity.get('kind')}:{entity.get('key')}" for entity in head_entities}
+    base_relation_ids = {_relation_key(relation) for relation in base_relations}
+    head_relation_ids = {_relation_key(relation) for relation in head_relations}
+
+    return {
+        "base_entity_count": len(base_entities),
+        "head_entity_count": len(head_entities),
+        "entity_delta": len(head_entities) - len(base_entities),
+        "added_entities": sorted(head_entity_ids - base_entity_ids)[:500],
+        "removed_entities": sorted(base_entity_ids - head_entity_ids)[:500],
+        "base_relation_count": len(base_relations),
+        "head_relation_count": len(head_relations),
+        "relation_delta": len(head_relations) - len(base_relations),
+        "added_relations": sorted(head_relation_ids - base_relation_ids)[:500],
+        "removed_relations": sorted(base_relation_ids - head_relation_ids)[:500],
+        "entity_kind_counts": {
+            "base": _count_by_kind(base_entities),
+            "head": _count_by_kind(head_entities),
+        },
+    }
+
+
+def _count_by_kind(entities: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for entity in entities:
+        kind = str(entity.get("kind", "")).strip() or "unknown"
+        counts[kind] = counts.get(kind, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _relation_key(relation: dict[str, Any]) -> str:
+    return f"{relation.get('source')}::{relation.get('predicate')}::{relation.get('target')}"
+
+
+def _render_diff_markdown(diff: dict[str, Any]) -> str:
+    lines = [
+        "# Analysis Diff",
+        "",
+        f"- Base run: `{diff['base_run_dir']}`",
+        f"- Head run: `{diff['head_run_dir']}`",
+        f"- Frameworks added: {len(diff['frameworks']['added'])}",
+        f"- Frameworks removed: {len(diff['frameworks']['removed'])}",
+        f"- Recovered sources added: {len(diff['recovered_sources']['added'])}",
+        f"- Recovered sources removed: {len(diff['recovered_sources']['removed'])}",
+        "",
+        "## Framework Changes",
+        "",
+    ]
+    lines.extend(f"- Added: `{item}`" for item in diff["frameworks"]["added"][:50])
+    lines.extend(f"- Removed: `{item}`" for item in diff["frameworks"]["removed"][:50])
+    lines.extend(
+        [
+            "",
+            "## Analysis Index",
+            "",
+            f"- Entity delta: {diff['analysis_index']['entity_delta']}",
+            f"- Relation delta: {diff['analysis_index']['relation_delta']}",
+        ]
+    )
+    return "\n".join(lines) + "\n"

@@ -35,10 +35,15 @@ class PortingAdvisorTests(unittest.TestCase):
             manifest_path = output_dir / "porting" / "porting_manifest.json"
             notes_path = output_dir / "porting" / "PORTING_NOTES.md"
             copied_source = output_dir / "porting" / "prepared_sources" / "recovered_sources" / "main.ts"
+            recompile_root = output_dir / "porting" / "recompile"
 
             self.assertTrue(manifest_path.exists())
             self.assertTrue(notes_path.exists())
             self.assertTrue(copied_source.exists())
+            self.assertTrue((recompile_root / "projects" / "node_app" / "package.json").exists())
+            self.assertTrue((recompile_root / "rebuild_plan.json").exists())
+            self.assertTrue((recompile_root / "signing_plan.json").exists())
+            self.assertTrue((recompile_root / "patching" / "patch_plan.json").exists())
             self.assertTrue(any("Porting preparation generated" == finding.title for finding in report.findings))
 
 

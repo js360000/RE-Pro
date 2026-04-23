@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from .analysis_diff import compare_analysis_runs
 from .dependency_installer import DependencyInstaller
 from .engine import ReverseEngineeringEngine
 from .llm_assist import run_llm_assist_job
@@ -41,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     install_tools = subparsers.add_parser("install-tools", help="Download portable reverse-engineering dependencies")
     install_tools.add_argument("--tools-root", default="tools", help="Installation root for downloaded tools")
+
+    compare_runs = subparsers.add_parser("compare-runs", help="Compare two analysis run directories")
+    compare_runs.add_argument("base_run", help="Base analysis run directory")
+    compare_runs.add_argument("head_run", help="Head analysis run directory")
+    compare_runs.add_argument("-o", "--output", default="", help="Optional output directory for diff artifacts")
+    compare_runs.add_argument("--json", action="store_true", help="Print the diff JSON to stdout")
 
     mcp_server = subparsers.add_parser("mcp-server", help="Run the RE-Pro MCP server")
     mcp_server.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
@@ -100,6 +107,14 @@ def main() -> int:
         installer = DependencyInstaller(tools_root=Path(args.tools_root), logger=print)
         result = installer.install_all()
         print(json.dumps(result, indent=2))
+        return 0
+    if args.command == "compare-runs":
+        output_dir = Path(args.output).resolve() if args.output else None
+        diff = compare_analysis_runs(Path(args.base_run), Path(args.head_run), output_dir)
+        if args.json or output_dir is None:
+            print(json.dumps(diff, indent=2))
+        else:
+            print(f"Analysis diff written to {output_dir}")
         return 0
     if args.command == "mcp-server":
         mcp_args = [

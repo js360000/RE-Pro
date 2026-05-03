@@ -21,6 +21,10 @@ SUPPORTED_TOOLCHAINS = {
     "yarn": [["yarn"]],
     "cargo": [["cargo"]],
     "cmake": [["cmake"]],
+    "cxx": [["clang++"], ["g++"], ["cl"]],
+    "g++": [["g++"]],
+    "clang++": [["clang++"]],
+    "msvc-cl": [["cl"]],
     "apksigner": [["apksigner"]],
     "zipalign": [["zipalign"]],
     "jarsigner": [["jarsigner"]],
@@ -395,6 +399,14 @@ def validate_reconstruction_file(path: Path, *, workspace_root: Path, logger=Non
             return {"ok": False, "error": "Node.js not available for JS syntax validation"}
         result = run_command_logged(node + ["--check", str(path)], cwd=workspace_root, timeout=timeout, logger=logger, label="node-check")
         return _command_result(*result, command=node + ["--check", str(path)])
+    if suffix in {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}:
+        compiler = resolve_command([["clang++"], ["g++"]])
+        if compiler is None:
+            return {"ok": False, "error": "No clang++ or g++ compiler available for C/C++ syntax validation"}
+        language = "c++" if suffix in {".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"} else "c"
+        command = compiler + ["-std=c++20", "-fsyntax-only", "-x", language, str(path)]
+        result = run_command_logged(command, cwd=workspace_root, timeout=timeout, logger=logger, label="cxx-syntax")
+        return _command_result(*result, command=command)
     return {"ok": True, "command": ["noop"], "stdout": "", "stderr": "", "note": f"No validator for {suffix}"}
 
 

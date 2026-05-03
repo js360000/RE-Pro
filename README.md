@@ -197,11 +197,19 @@ set RE_PRO_SYMBOL_SERVERS=https://msdl.microsoft.com/download/symbols/;https://y
 
 RE-Pro can call OpenAI models through a normal API key or through the Codex ChatGPT OAuth token cache written by Codex CLI/Desktop. The default `--llm-auth auto` mode uses `OPENAI_API_KEY` first, then falls back to `CODEX_AUTH_JSON`, `CODEX_HOME\auth.json`, or `~\.codex\auth.json`.
 
+API-key mode uses the OpenAI Responses API directly. Codex OAuth mode shells out to `codex exec` so the Codex CLI handles ChatGPT token refresh and backend access; install and sign in with Codex first (`npm install -g @openai/codex`, then `codex login`) before using `--llm-auth codex-oauth`.
+
 Run GPT-assisted reconstruction with an API key:
 
 ```bash
 set OPENAI_API_KEY=...
 re-pro analyze path\to\target.exe -o analysis_output --llm --llm-model gpt-5.5 --llm-reasoning high --llm-background --llm-task "Focus on updater and IPC logic"
+```
+
+For interactive runs where you want the model's markdown summary mirrored into the terminal log immediately:
+
+```bash
+re-pro analyze path\to\target.exe -o analysis_output --llm --llm-foreground --llm-model gpt-5.5
 ```
 
 Run through Codex OAuth instead of an API key:

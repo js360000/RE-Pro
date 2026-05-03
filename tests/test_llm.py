@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -111,6 +113,63 @@ class LlmAssistTests(unittest.TestCase):
             self.assertIn("Foo", payload["class_names"])
             self.assertIn("Foo::Bar", payload["function_names"])
 
+    def test_llm_context_prioritizes_decompiler_artifacts_and_directory_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "out"
+            llm_dir = output_dir / "llm"
+            target = root / "sample.exe"
+            target.write_bytes(b"MZ")
+            report = AnalysisReport(target=str(target), output_dir=str(output_dir))
+            status_path = output_dir / "ghidra" / "status.json"
+            status_path.parent.mkdir(parents=True)
+            status_path.write_text(json.dumps({"state": "completed"}), encoding="utf-8")
+            targeted = output_dir / "ghidra" / "exports" / "targeted_decompilation.json"
+            targeted.parent.mkdir(parents=True)
+            targeted.write_text(json.dumps({"methods": [{"name": "Fixture::AppController::Run"}]}), encoding="utf-8")
+            pseudo_dir = output_dir / "ghidra" / "exports" / "class_pseudo_cpp"
+            pseudo_dir.mkdir()
+            (pseudo_dir / "Fixture__AppController.cpp").write_text("void Fixture::AppController::Run() {}\n", encoding="utf-8")
+            report.add_artifact(str(status_path), "metadata", "Ghidra status")
+            report.add_artifact(str(pseudo_dir), "directory", "Ghidra class-scoped pseudo-C++ directory")
+            report.add_artifact(str(targeted), "metadata", "Ghidra targeted pseudo-code export")
+            context = AnalysisContext(target=target, output_dir=output_dir)
+
+            items = LLMAssistAnalyzer()._build_context_items(context, report, llm_dir)
+            names = [str(item["name"]) for item in items]
+
+            self.assertTrue(any("targeted_decompilation.json" in name for name in names))
+            self.assertTrue(any("Fixture__AppController.cpp" in name for name in names))
+            targeted_index = next(index for index, name in enumerate(names) if "targeted_decompilation.json" in name)
+            status_index = next(index for index, name in enumerate(names) if "status.json" in name)
+            self.assertLess(targeted_index, status_index)
+
+    def test_foreground_llm_waits_for_pending_tool_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "out"
+            status_path = output_dir / "ghidra" / "status.json"
+            status_path.parent.mkdir(parents=True)
+            status_path.write_text(json.dumps({"state": "running"}), encoding="utf-8")
+            target = root / "sample.exe"
+            target.write_bytes(b"MZ")
+            log_messages: list[str] = []
+            context = AnalysisContext(target=target, output_dir=output_dir, logger=log_messages.append)
+
+            def finish_status() -> None:
+                time.sleep(0.15)
+                status_path.write_text(json.dumps({"state": "completed"}), encoding="utf-8")
+
+            worker = threading.Thread(target=finish_status)
+            worker.start()
+            try:
+                with patch.dict(os.environ, {"RE_PRO_LLM_CONTEXT_WAIT_SECONDS": "2"}):
+                    LLMAssistAnalyzer()._wait_for_async_tool_context(context)
+            finally:
+                worker.join()
+
+            self.assertTrue(any("waiting for async RE context" in message for message in log_messages))
+
     def test_run_llm_assist_job_writes_reconstructed_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -150,12 +209,80 @@ class LlmAssistTests(unittest.TestCase):
             )
             (root / "naming_hints.json").write_text(json.dumps({}), encoding="utf-8")
 
-            result = run_llm_assist_job(request_path, client_factory=_FakeClient)
+            log_messages: list[str] = []
+            result = run_llm_assist_job(request_path, client_factory=_FakeClient, logger=log_messages.append)
 
             self.assertEqual(result["status"], "completed")
             reconstructed = root / "llm" / "reconstructed_src" / "src" / "app_approx.ts"
             self.assertTrue(reconstructed.exists())
             self.assertIn("Approximate reconstruction", reconstructed.read_text(encoding="utf-8"))
+            self.assertTrue(any(message == "LLM reconstruction output:" for message in log_messages))
+            self.assertTrue(any("Reconstruction complete." in message for message in log_messages))
+            llm_log = root / "llm" / "llm.log"
+            self.assertIn("LLM reconstruction output:", llm_log.read_text(encoding="utf-8"))
+
+    def test_run_llm_assist_job_uses_codex_cli_for_codex_oauth(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_script = fake_bin / "fake_codex.py"
+            fake_script.write_text(
+                "\n".join(
+                    [
+                        "import json, sys",
+                        "from pathlib import Path",
+                        "args = sys.argv[1:]",
+                        "sys.stdin.read()",
+                        "last = Path(args[args.index('-o') + 1])",
+                        "last.write_text(json.dumps({",
+                        "  'summary_markdown': '## Codex CLI complete',",
+                        "  'written_files': [],",
+                        "  'reconstructed_files': [{'relative_path': 'src/codex_cli.cpp', 'content': '// codex cli backend\\\\n', 'confidence': 0.8, 'rationale': 'fixture'}],",
+                        "  'validation_notes': ['fixture validation']",
+                        "}), encoding='utf-8')",
+                        "print('fake codex cli ran')",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            fake_cmd = fake_bin / "codex.cmd"
+            fake_cmd.write_text("@echo off\r\npy \"%~dp0fake_codex.py\" %*\r\n", encoding="utf-8")
+            auth_path = root / "auth.json"
+            auth_path.write_text(json.dumps({"auth_mode": "chatgpt", "tokens": {"access_token": "codex-token"}}), encoding="utf-8")
+            request_path = root / "request.json"
+            request_path.write_text(
+                json.dumps(
+                    {
+                        "llm_dir": str(root / "llm"),
+                        "reconstructed_root": str(root / "llm" / "reconstructed_src"),
+                        "settings": {
+                            "model": "gpt-5.5",
+                            "auth_provider": "codex-oauth",
+                            "codex_auth_path": str(auth_path),
+                            "reasoning_effort": "medium",
+                            "verbosity": "medium",
+                            "max_output_tokens": 4000,
+                        },
+                        "report": {"target": "sample.exe", "frameworks": ["Native Windows application"]},
+                        "context_items": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            env = {
+                "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                "OPENAI_API_KEY": "",
+            }
+            with patch.dict(os.environ, env):
+                result = run_llm_assist_job(request_path)
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["backend"], "codex-cli")
+            self.assertTrue((root / "llm" / "reconstructed_src" / "src" / "codex_cli.cpp").exists())
+            self.assertIn("Codex CLI complete", (root / "llm" / "assistant_summary.md").read_text(encoding="utf-8"))
+            self.assertIn("backend", json.loads((root / "llm" / "status.json").read_text(encoding="utf-8")))
 
     def test_llm_analyzer_auto_mode_runs_when_sources_are_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -190,6 +317,7 @@ class LlmAssistTests(unittest.TestCase):
 
             self.assertTrue(any("LLM reconstruction completed" == finding.title for finding in report.findings))
             self.assertTrue((output_dir / "llm_assist" / "request.json").exists())
+            self.assertTrue(any(artifact.description == "LLM reconstruction log" for artifact in report.artifacts))
 
     def test_llm_analyzer_accepts_codex_oauth_auth_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -223,6 +351,34 @@ class LlmAssistTests(unittest.TestCase):
             self.assertEqual(request["settings"]["auth_provider"], "codex-oauth")
             self.assertEqual(request["settings"]["codex_auth_path"], str(auth_path))
             self.assertEqual(request["settings"]["reasoning_effort"], "xhigh")
+
+    def test_llm_analyzer_records_foreground_failures_without_aborting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "out"
+            target = root / "sample.exe"
+            target.write_bytes(b"MZ")
+            report = AnalysisReport(target=str(target), output_dir=str(output_dir), target_type="portable-executable")
+            context = AnalysisContext(
+                target=target,
+                output_dir=output_dir,
+                probable_binary=True,
+                llm_settings=LlmAssistSettings(
+                    enabled=True,
+                    model="gpt-5.5",
+                    background=False,
+                ),
+            )
+
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+                with patch("re_pro.analyzers.llm.run_llm_assist_job", side_effect=RuntimeError("missing scope")):
+                    LLMAssistAnalyzer().analyze(context, report)
+
+            failure = next(finding for finding in report.findings if finding.title == "LLM reconstruction failed")
+            self.assertEqual(failure.severity, "warning")
+            self.assertIn("missing scope", failure.details or "")
+            self.assertTrue(any(artifact.description == "LLM reconstruction status" for artifact in report.artifacts))
+            self.assertTrue(any(artifact.description == "LLM reconstruction log" for artifact in report.artifacts))
 
     def test_index_tools_expose_entities_and_relations(self) -> None:
         analysis_index = {

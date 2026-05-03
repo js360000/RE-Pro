@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from ..llm_auth import llm_auth_available
@@ -16,8 +17,12 @@ from .base import Analyzer
 
 class LLMAssistAnalyzer(Analyzer):
     name = "LLM-assisted reconstruction"
-    MAX_CONTEXT_ARTIFACTS = 12
+    MAX_CONTEXT_ARTIFACTS = 24
     MAX_CONTEXT_CHARS = 16000
+    MAX_CONTEXT_DIR_FILES = 16
+    TOOL_WAIT_SECONDS = 180
+    TOOL_WAIT_POLL_SECONDS = 1.0
+    TOOL_TERMINAL_STATES = {"completed", "failed", "skipped", "cancelled", "timeout", "timed_out"}
 
     def analyze(self, context, report) -> None:
         settings = context.llm_settings
@@ -31,10 +36,13 @@ class LLMAssistAnalyzer(Analyzer):
 
         llm_dir = ensure_dir(context.output_dir / "llm_assist")
         reconstructed_root = ensure_dir(llm_dir / "reconstructed_src")
+        if not settings.background:
+            self._wait_for_async_tool_context(context)
         context_items = self._build_context_items(context, report, llm_dir)
         request_path = llm_dir / "request.json"
         status_path = llm_dir / "status.json"
         summary_path = llm_dir / "assistant_summary.md"
+        log_path = llm_dir / "llm.log"
         request_payload = {
             "llm_dir": str(llm_dir),
             "reconstructed_root": str(reconstructed_root),
@@ -58,6 +66,7 @@ class LLMAssistAnalyzer(Analyzer):
         request_path.write_text(json.dumps(request_payload, indent=2), encoding="utf-8")
         report.add_artifact(str(request_path), "metadata", "LLM reconstruction request")
         report.add_artifact(str(status_path), "metadata", "LLM reconstruction status")
+        report.add_artifact(str(log_path), "log", "LLM reconstruction log")
         report.add_artifact(str(reconstructed_root), "directory", "LLM reconstructed source directory")
 
         if settings.background:
@@ -81,7 +90,21 @@ class LLMAssistAnalyzer(Analyzer):
             report.add_note(f"LLM reconstruction is running in the background. Status: {status_path}")
             return
 
-        result = run_llm_assist_job(request_path, logger=context.log)
+        try:
+            result = run_llm_assist_job(request_path, logger=context.log)
+        except Exception as exc:
+            report.add_finding(
+                "LLM reconstruction failed",
+                f"{settings.model} reconstruction failed. See the LLM log and status artifacts for details.",
+                severity="warning",
+                details=str(exc),
+            )
+            report.add_note(f"LLM reconstruction failed; status: {status_path}; log: {log_path}")
+            context.log(f"LLM reconstruction failed; continuing analysis output generation: {exc}")
+            if summary_path.exists():
+                report.add_artifact(str(summary_path), "report", "LLM reconstruction summary")
+            return
+
         report.add_artifact(str(summary_path), "report", "LLM reconstruction summary")
         report.add_finding(
             "LLM reconstruction completed",
@@ -163,9 +186,23 @@ class LLMAssistAnalyzer(Analyzer):
             )
 
         added_artifacts = 0
-        for artifact in report.artifacts:
+        ordered_artifacts = sorted(enumerate(report.artifacts), key=lambda item: (self._artifact_priority(item[1]), item[0]))
+        for _, artifact in ordered_artifacts:
             path = Path(artifact.path)
-            if not path.exists() or not path.is_file():
+            if not path.exists():
+                continue
+            if path.is_dir():
+                added_artifacts += self._add_directory_snapshot(
+                    add_item,
+                    path,
+                    artifact.description,
+                    added_artifacts,
+                    max(0, self.MAX_CONTEXT_ARTIFACTS - added_artifacts),
+                )
+                if added_artifacts >= self.MAX_CONTEXT_ARTIFACTS:
+                    break
+                continue
+            if not path.is_file():
                 continue
             if path.suffix.lower() not in {".txt", ".md", ".json", ".xml", ".js", ".ts", ".tsx", ".css", ".html", ".log"}:
                 continue
@@ -185,6 +222,136 @@ class LLMAssistAnalyzer(Analyzer):
         index_path = llm_dir / "context_index.json"
         index_path.write_text(json.dumps(items, indent=2), encoding="utf-8")
         return items
+
+    def _wait_for_async_tool_context(self, context) -> None:
+        wait_seconds = self._tool_wait_seconds()
+        if wait_seconds <= 0:
+            return
+        status_paths = [
+            context.output_dir / "ghidra" / "status.json",
+            context.output_dir / "pe_tools" / "status.json",
+        ]
+        pending = [path for path in status_paths if self._status_path_is_pending(path)]
+        if not pending:
+            return
+        context.log(
+            "Foreground LLM reconstruction is waiting for async RE context: "
+            + ", ".join(str(path) for path in pending)
+        )
+        deadline = time.monotonic() + wait_seconds
+        while pending and time.monotonic() < deadline:
+            time.sleep(self.TOOL_WAIT_POLL_SECONDS)
+            pending = [path for path in pending if self._status_path_is_pending(path)]
+        if pending:
+            context.log(
+                "Foreground LLM reconstruction context wait timed out; continuing with available artifacts: "
+                + ", ".join(str(path) for path in pending)
+            )
+
+    @classmethod
+    def _tool_wait_seconds(cls) -> float:
+        raw = os.environ.get("RE_PRO_LLM_CONTEXT_WAIT_SECONDS", "").strip()
+        if not raw:
+            return float(cls.TOOL_WAIT_SECONDS)
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            return float(cls.TOOL_WAIT_SECONDS)
+
+    @classmethod
+    def _status_path_is_pending(cls, path: Path) -> bool:
+        if not path.exists():
+            return False
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, ValueError):
+            return False
+        state = str(payload.get("state") or "").strip().lower()
+        return state not in cls.TOOL_TERMINAL_STATES
+
+    @staticmethod
+    def _artifact_priority(artifact) -> int:
+        text = f"{artifact.description} {artifact.path}".lower()
+        path = Path(artifact.path)
+        name = path.name.lower()
+        if path.is_dir():
+            if "class_pseudo_cpp" in text or "class-scoped" in text:
+                return 2
+            if "pseudo_cpp" in text or "pseudo-c++" in text:
+                return 3
+            if "pseudo_code" in text or "pseudo-code" in text:
+                return 8
+        priority_markers = [
+            ("targeted_decompilation", 0),
+            ("targeted pseudo-code", 0),
+            ("enriched_class_manifest", 1),
+            ("enriched class manifest", 1),
+            ("class_pseudo_cpp", 2),
+            ("class-scoped pseudo", 2),
+            ("pseudo_code", 3),
+            ("pseudo-code", 3),
+            ("msvc rtti class manifest", 4),
+            ("pdb", 5),
+            ("pseudo-c++", 6),
+            ("function list", 7),
+            ("strings export", 8),
+            ("status", 90),
+            ("log", 95),
+        ]
+        for marker, priority in priority_markers:
+            if marker in text:
+                return priority
+        return 50
+
+    def _add_directory_snapshot(
+        self,
+        add_item,
+        path: Path,
+        description: str,
+        artifact_index: int,
+        slots_remaining: int,
+    ) -> int:
+        if slots_remaining <= 0 or not self._should_snapshot_directory(path, description):
+            return 0
+        source_suffixes = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".rs", ".js", ".ts", ".tsx", ".jsx", ".md", ".json"}
+        candidates = [
+            candidate
+            for candidate in sorted(path.rglob("*"))
+            if candidate.is_file() and candidate.suffix.lower() in source_suffixes
+        ]
+        added = 0
+        for candidate in candidates[: min(self.MAX_CONTEXT_DIR_FILES, slots_remaining)]:
+            try:
+                payload = candidate.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            try:
+                rel = candidate.relative_to(path).as_posix()
+            except ValueError:
+                rel = candidate.name
+            add_item(
+                f"artifact_{artifact_index + added}_{path.name}_{rel}",
+                payload[: self.MAX_CONTEXT_CHARS],
+                f"Directory artifact snapshot: {description}; file {rel}",
+            )
+            added += 1
+        return added
+
+    @staticmethod
+    def _should_snapshot_directory(path: Path, description: str) -> bool:
+        text = f"{description} {path}".lower()
+        return any(
+            marker in text
+            for marker in (
+                "pseudo_cpp",
+                "pseudo-c++",
+                "pseudo-code",
+                "pseudo_code",
+                "recovered source",
+                "class-scoped",
+                "ghidra",
+            )
+        )
 
     @staticmethod
     def _build_naming_hints(context, report) -> dict[str, object]:
@@ -212,6 +379,11 @@ class LLMAssistAnalyzer(Analyzer):
             original_path = str(source.original_path or "").replace("\\", "/").strip()
             if original_path and original_path not in preferred_source_paths:
                 preferred_source_paths.append(original_path)
+            LLMAssistAnalyzer._add_names_from_recovered_source_path(
+                original_path,
+                class_names=class_names,
+                namespaces=namespaces,
+            )
 
         for entity in analysis_index.get("entities") or []:
             kind = str(entity.get("kind", "")).strip().lower()
@@ -262,6 +434,32 @@ class LLMAssistAnalyzer(Analyzer):
         hints["namespaces"] = namespaces[:128]
         hints["debug_references"] = debug_references[:128]
         return hints
+
+    @staticmethod
+    def _add_names_from_recovered_source_path(
+        original_path: str,
+        *,
+        class_names: list[str],
+        namespaces: list[str],
+    ) -> None:
+        if not original_path:
+            return
+        if original_path.lower().startswith("ddl/"):
+            return
+        stem = Path(original_path.replace("::", "/")).stem
+        if not stem or stem.lower() in {"source", "recovered", "pseudo"}:
+            return
+        if "::" in original_path:
+            namespace_parts = [part for part in original_path.rsplit("::", 1)[0].split("::") if part and part != "msvc_rtti"]
+            class_name = "::".join(namespace_parts + [stem]) if namespace_parts else stem
+        else:
+            class_name = stem
+        if class_name and class_name not in class_names:
+            class_names.append(class_name)
+        if "::" in class_name:
+            namespace = "::".join(class_name.split("::")[:-1]).strip(":")
+            if namespace and namespace not in namespaces:
+                namespaces.append(namespace)
 
     @staticmethod
     def _spawn_background_job(request_path: Path, context) -> None:

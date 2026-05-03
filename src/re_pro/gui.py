@@ -443,7 +443,7 @@ class MainWindow(QMainWindow):
         self.runtime_text.setReadOnly(True)
         self.porting_text = QPlainTextEdit()
         self.porting_text.setReadOnly(True)
-        self.llm_text = QPlainTextEdit()
+        self.llm_text = QTextEdit()
         self.llm_text.setReadOnly(True)
 
         self.frameworks_list = QListWidget()
@@ -964,10 +964,24 @@ class MainWindow(QMainWindow):
         self.porting_text.setPlainText(self._load_artifact_text(report, "Porting guidance"))
 
     def _populate_llm(self, report: dict) -> None:
-        text = self._load_artifact_text(report, "LLM reconstruction summary")
-        if not text:
-            text = self._load_artifact_text(report, "LLM reconstruction status")
-        self.llm_text.setPlainText(text)
+        parts: list[str] = []
+        summary = self._load_artifact_text(report, "LLM reconstruction summary")
+        status = self._load_artifact_text(report, "LLM reconstruction status")
+        log_text = self._load_artifact_text(report, "LLM reconstruction log")
+        if summary:
+            parts.extend(["## LLM Reconstruction Output", "", summary.strip()])
+        if status:
+            parts.extend(["", "## LLM Status", "", "```json", status.strip(), "```"])
+        if log_text:
+            parts.extend(["", "## LLM Log", "", "```text", log_text.strip(), "```"])
+        self._set_markdown_text(self.llm_text, "\n".join(parts).strip())
+
+    @staticmethod
+    def _set_markdown_text(widget: QTextEdit, text: str) -> None:
+        if hasattr(widget, "setMarkdown"):
+            widget.setMarkdown(text)
+        else:
+            widget.setPlainText(text)
 
     def _populate_findings(self, report: dict) -> None:
         findings = report.get("findings") or []

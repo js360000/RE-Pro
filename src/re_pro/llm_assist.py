@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from .llm_auth import resolve_codex_auth_path
 from .recompile import (
     create_recompile_workspace,
     detect_toolchains,
@@ -34,6 +38,8 @@ def run_llm_assist_job(
     summary_path = llm_dir / "assistant_summary.md"
     recompile_root = ensure_dir(llm_dir / "recompile_workspace")
     create_recompile_workspace(recompile_root, payload.get("report") or {}, (payload.get("report") or {}).get("frameworks") or [])
+    settings = payload.get("settings") or {}
+    auth_status = llm_auth_status(SimpleSettings(settings))
 
     def log(message: str) -> None:
         with log_path.open("a", encoding="utf-8") as handle:
@@ -52,13 +58,42 @@ def run_llm_assist_job(
         status.update(extra)
         status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
 
-    write_status("running", started_at=_utc_now())
+    write_status(
+        "running",
+        started_at=_utc_now(),
+        model=settings.get("model", "gpt-5.4"),
+        auth=auth_status,
+    )
     log("Preparing LLM reconstruction run")
+    log(
+        "LLM auth selected: "
+        f"{auth_status.get('selected')} "
+        f"(OPENAI_API_KEY={bool(auth_status.get('has_openai_api_key'))}, "
+        f"Codex OAuth={bool(auth_status.get('has_codex_oauth_token'))})"
+    )
+    log(
+        "LLM request configuration: "
+        f"model={settings.get('model', 'gpt-5.4')} "
+        f"reasoning={settings.get('reasoning_effort', 'high')} "
+        f"verbosity={settings.get('verbosity', 'medium')}"
+    )
 
     try:
         context_items = payload.get("context_items") or []
         analysis_index = payload.get("analysis_index") or {}
-        settings = payload.get("settings") or {}
+        if client_factory is None and auth_status.get("selected") == "codex-oauth":
+            return _run_codex_cli_assist_job(
+                payload=payload,
+                request_file=request_file,
+                llm_dir=llm_dir,
+                reconstructed_root=reconstructed_root,
+                log=log,
+                write_status=write_status,
+                auth_status=auth_status,
+                settings=settings,
+                summary_path=summary_path,
+                writes_manifest_path=writes_manifest_path,
+            )
         client = client_factory() if client_factory else _default_client_factory(settings)
         naming_hints = _find_context_json(context_items, "naming_hints.json")
         tools = _tool_specs()
@@ -123,13 +158,16 @@ def run_llm_assist_job(
         if not summary.strip():
             summary = "The reconstruction job finished without a text summary from the model."
         summary_path.write_text(summary, encoding="utf-8")
+        log("LLM reconstruction output:")
+        for line in summary.splitlines() or [""]:
+            log(line)
         writes_manifest_path.write_text(json.dumps(writes, indent=2), encoding="utf-8")
         (llm_dir / "validation_results.json").write_text(json.dumps(validations, indent=2), encoding="utf-8")
         write_status(
             "completed",
             finished_at=_utc_now(),
             model=settings.get("model", "gpt-5.4"),
-            auth=llm_auth_status(SimpleSettings(settings)),
+            auth=auth_status,
             response_id=_get_value(response, "id"),
             tool_rounds=tool_rounds,
             written_files=len(writes),
@@ -145,13 +183,270 @@ def run_llm_assist_job(
             "response_id": _get_value(response, "id"),
         }
     except Exception as exc:
-        write_status("failed", finished_at=_utc_now(), error=str(exc))
+        write_status(
+            "failed",
+            finished_at=_utc_now(),
+            model=settings.get("model", "gpt-5.4"),
+            auth=auth_status,
+            error=str(exc),
+        )
         log(f"LLM assist failed: {exc}")
         raise
 
 
 def _default_client_factory(settings: dict[str, Any]):
     return build_openai_client_for_settings(SimpleSettings(settings))
+
+
+def _run_codex_cli_assist_job(
+    *,
+    payload: dict[str, Any],
+    request_file: Path,
+    llm_dir: Path,
+    reconstructed_root: Path,
+    log: Callable[[str], None],
+    write_status: Callable[..., None],
+    auth_status: dict[str, object],
+    settings: dict[str, Any],
+    summary_path: Path,
+    writes_manifest_path: Path,
+) -> dict[str, Any]:
+    codex = shutil.which("codex")
+    if not codex:
+        raise RuntimeError("Codex OAuth auth was selected, but the `codex` CLI is not available on PATH.")
+
+    prompt_path = llm_dir / "codex_cli_prompt.md"
+    last_message_path = llm_dir / "codex_cli_last_message.json"
+    transcript_path = llm_dir / "codex_cli_transcript.log"
+    schema_path = llm_dir / "codex_cli_output_schema.json"
+    validation_results_path = llm_dir / "validation_results.json"
+    schema_path.write_text(json.dumps(_codex_cli_output_schema(), indent=2), encoding="utf-8")
+    prompt = _build_codex_cli_prompt(payload, request_file, reconstructed_root)
+    prompt_path.write_text(prompt, encoding="utf-8")
+
+    command = [
+        codex,
+        "exec",
+        "--ignore-user-config",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--sandbox",
+        "read-only",
+        "--color",
+        "never",
+        "--cd",
+        str(llm_dir),
+        "-m",
+        str(settings.get("model", "gpt-5.4")),
+        "-c",
+        f'model_reasoning_effort="{_codex_reasoning_effort(settings)}"',
+        "--output-schema",
+        str(schema_path),
+        "-o",
+        str(last_message_path),
+        "-",
+    ]
+    env = os.environ.copy()
+    codex_auth_path = resolve_codex_auth_path(str(settings.get("codex_auth_path") or "") or None)
+    if codex_auth_path.name.lower() == "auth.json" and codex_auth_path.exists():
+        env["CODEX_HOME"] = str(codex_auth_path.parent)
+
+    log("Running LLM reconstruction through Codex CLI backend")
+    log(f"Codex CLI command: {' '.join(command[:-1])} -")
+    with transcript_path.open("w", encoding="utf-8") as transcript:
+        process = subprocess.Popen(
+            command,
+            cwd=str(llm_dir),
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert process.stdin is not None
+        process.stdin.write(prompt)
+        process.stdin.close()
+        assert process.stdout is not None
+        for line in process.stdout:
+            clean = line.rstrip()
+            transcript.write(line)
+            if clean:
+                log(f"[codex-cli] {clean}")
+        exit_code = process.wait()
+
+    if exit_code != 0:
+        raise RuntimeError(f"Codex CLI reconstruction failed with exit code {exit_code}. See {transcript_path}.")
+
+    final_text = last_message_path.read_text(encoding="utf-8", errors="ignore") if last_message_path.exists() else ""
+    final_payload = _json_loads(final_text) if final_text.strip() else {}
+    summary = str(final_payload.get("summary_markdown") or final_payload.get("summary") or final_text).strip()
+    if not summary:
+        summary = "Codex CLI reconstruction completed without a structured summary."
+    summary_path.write_text(summary, encoding="utf-8")
+    log("LLM reconstruction output:")
+    for line in summary.splitlines() or [""]:
+        log(line)
+
+    json_writes = _write_codex_cli_reconstructed_files(reconstructed_root, final_payload)
+    writes = _collect_codex_cli_writes(reconstructed_root, final_payload)
+    if json_writes and not writes:
+        writes = json_writes
+    writes_manifest_path.write_text(json.dumps(writes, indent=2), encoding="utf-8")
+    validation_results_path.write_text(json.dumps(final_payload.get("validation_notes") or [], indent=2), encoding="utf-8")
+    write_status(
+        "completed",
+        finished_at=_utc_now(),
+        model=settings.get("model", "gpt-5.4"),
+        auth=auth_status,
+        backend="codex-cli",
+        tool_rounds=0,
+        written_files=len(writes),
+        summary_path=str(summary_path),
+        validation_results=str(validation_results_path),
+        transcript_path=str(transcript_path),
+    )
+    return {
+        "status": "completed",
+        "summary_path": str(summary_path),
+        "written_files_path": str(writes_manifest_path),
+        "written_files": writes,
+        "validation_results_path": str(validation_results_path),
+        "response_id": "",
+        "backend": "codex-cli",
+    }
+
+
+def _codex_reasoning_effort(settings: dict[str, Any]) -> str:
+    effort = str(settings.get("reasoning_effort") or "high").strip().lower()
+    return effort if effort in {"none", "low", "medium", "high", "xhigh"} else "high"
+
+
+def _codex_cli_output_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "summary_markdown": {"type": "string"},
+            "written_files": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "relative_path": {"type": "string"},
+                        "confidence": {"type": "number"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": ["relative_path", "confidence", "rationale"],
+                },
+            },
+            "reconstructed_files": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "relative_path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "confidence": {"type": "number"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": ["relative_path", "content", "confidence", "rationale"],
+                },
+            },
+            "validation_notes": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["summary_markdown", "written_files", "reconstructed_files", "validation_notes"],
+    }
+
+
+def _build_codex_cli_prompt(payload: dict[str, Any], request_file: Path, reconstructed_root: Path) -> str:
+    settings = payload.get("settings") or {}
+    context_items = payload.get("context_items") or []
+    item_lines = "\n".join(
+        f"- {item.get('name')}: {item.get('path')} ({item.get('summary', '')})" for item in context_items
+    )
+    return (
+        "You are running as the Codex CLI backend for RE-Pro's LLM-assisted reverse-engineering pass.\n"
+        "Work only inside the current RE-Pro LLM workspace. Do not modify the original repository or target binary.\n\n"
+        f"Request JSON: {request_file}\n"
+        f"Reconstructed source output directory: {reconstructed_root}\n"
+        f"Operator task: {settings.get('user_task') or 'Reconstruct high-value source from the evidence.'}\n\n"
+        "Required workflow:\n"
+        "1. Read request.json and the listed context files.\n"
+        "2. Ground every reconstructed source file in concrete evidence from the context.\n"
+        "3. Return a small number of useful source-grade or pseudo-source files in `reconstructed_files`; RE-Pro will write them under reconstructed_src/.\n"
+        "4. Preserve recovered filenames, RTTI/vtable/class/function names, symbols, and source paths when present.\n"
+        "5. Read Ghidra targeted decompilation, enriched class manifests, PDB dumps, and pseudo-C++ directory snapshots before concluding source-level method names or bodies are unavailable.\n"
+        "6. If a decompiler or symbol artifact maps a vf_* slot/address to a better class method name, use the better method name and keep the address/slot in comments.\n"
+        "7. Do not invent broad application structure when evidence is thin; mark uncertainty in comments.\n"
+        "8. Return only the final JSON object requested by the provided output schema.\n\n"
+        "`relative_path` values must be relative to reconstructed_src and must not include a reconstructed_src/ prefix.\n"
+        "Do not attempt to write files yourself; the Codex CLI is intentionally running read-only for this backend.\n\n"
+        "Context items:\n"
+        f"{item_lines}\n"
+    )
+
+
+def _write_codex_cli_reconstructed_files(reconstructed_root: Path, final_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    writes: list[dict[str, Any]] = []
+    for item in final_payload.get("reconstructed_files") or []:
+        if not isinstance(item, dict):
+            continue
+        rel = _normalize_reconstructed_relative_path(str(item.get("relative_path") or ""))
+        content = str(item.get("content") or "")
+        if not rel or not content:
+            continue
+        destination = safe_output_path(reconstructed_root, rel)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(content, encoding="utf-8")
+        writes.append(
+            {
+                "relative_path": rel,
+                "path": str(destination),
+                "bytes": destination.stat().st_size,
+                "confidence": item.get("confidence"),
+                "rationale": item.get("rationale", "Returned by Codex CLI backend."),
+                "backend": "codex-cli",
+            }
+        )
+    return writes
+
+
+def _collect_codex_cli_writes(reconstructed_root: Path, final_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata: dict[str, dict[str, Any]] = {}
+    for item in list(final_payload.get("written_files") or []) + list(final_payload.get("reconstructed_files") or []):
+        if not isinstance(item, dict):
+            continue
+        rel = _normalize_reconstructed_relative_path(str(item.get("relative_path") or ""))
+        if rel:
+            metadata[rel] = item
+    writes: list[dict[str, Any]] = []
+    if not reconstructed_root.exists():
+        return writes
+    for path in sorted(candidate for candidate in reconstructed_root.rglob("*") if candidate.is_file()):
+        rel = path.relative_to(reconstructed_root).as_posix()
+        meta = metadata.get(rel) or {}
+        writes.append(
+            {
+                "relative_path": rel,
+                "path": str(path),
+                "bytes": path.stat().st_size,
+                "confidence": meta.get("confidence"),
+                "rationale": meta.get("rationale", "Written by Codex CLI backend."),
+                "backend": "codex-cli",
+            }
+        )
+    return writes
+
+
+def _normalize_reconstructed_relative_path(path: str) -> str:
+    rel = path.replace("\\", "/").strip("/")
+    while rel.lower().startswith("reconstructed_src/"):
+        rel = rel[len("reconstructed_src/") :]
+    return rel
 
 
 class SimpleSettings:
@@ -182,6 +477,8 @@ def _build_instructions(payload: dict[str, Any]) -> str:
         "Do not fall back to generic names like app_approx, module1, class_1, file1, or function_401000 when naming evidence already exists. "
         "If debug symbols or recovered source paths exist, mirror those original paths unless there is concrete contrary evidence. "
         "If RTTI or vtable evidence links a function to a class, write the pseudo-source under that class rather than as a detached anonymous function. "
+        "Before claiming method bodies or source-grade names are unavailable, inspect Ghidra targeted decompilation, enriched class manifests, PDB dumps, pseudo-code snapshots, and pseudo-C++ directory snapshots when they are present. "
+        "Replace vf_* placeholder names with symbol/decompiler/class-method names when the same slot or address is mapped to a better name; preserve the raw address/slot as a comment. "
         "When class layouts, fields, subobjects, constructor phases, thunks, call edges, or flag domains are present in naming_hints.json or the analysis index, preserve those names and comments in the reconstructed source. "
         "Use field offsets and provenance as hard evidence for member declarations, and keep uncertain field shapes visibly marked instead of renaming them away. "
         "Create a small number of high-value reconstructed files instead of spraying low-value boilerplate. "

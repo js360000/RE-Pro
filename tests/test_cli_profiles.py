@@ -53,6 +53,7 @@ class CliProfileTests(unittest.TestCase):
                         str(auth_path),
                         "--llm-reasoning",
                         "xhigh",
+                        "--llm-foreground",
                     ],
                 ):
                     exit_code = main()
@@ -63,6 +64,7 @@ class CliProfileTests(unittest.TestCase):
             self.assertEqual(llm_settings.auth_provider, "codex-oauth")
             self.assertEqual(llm_settings.codex_auth_path, str(auth_path))
             self.assertEqual(llm_settings.reasoning_effort, "xhigh")
+            self.assertFalse(llm_settings.background)
 
     def test_analyze_can_run_from_saved_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

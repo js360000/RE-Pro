@@ -15,6 +15,7 @@ dependencies = [
   "mcp>=1.27,<2",
   "openai>=1.0",
   "PyQt5>=5.15",
+  "rich>=13",
 ]
 
 [project.scripts]

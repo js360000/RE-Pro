@@ -71,6 +71,23 @@ COMMON_WINDOWS_PATTERNS: dict[str, list[str]] = {
     "llvm-pdbutil": [
         r"C:\Program Files\LLVM\bin\llvm-pdbutil.exe",
     ],
+    "clang++": [
+        r"C:\Program Files\LLVM\bin\clang++.exe",
+        r"C:\msys64\mingw64\bin\clang++.exe",
+        r"C:\msys64\ucrt64\bin\clang++.exe",
+        r"C:\msys64\clang64\bin\clang++.exe",
+    ],
+    "g++": [
+        r"C:\msys64\mingw64\bin\g++.exe",
+        r"C:\msys64\ucrt64\bin\g++.exe",
+        r"C:\msys64\clang64\bin\g++.exe",
+        r"C:\mingw64\bin\g++.exe",
+    ],
+    "cl": [
+        r"C:\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe",
+        r"C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe",
+        r"C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe",
+    ],
     "dotnet-symbol": [
         str(Path.home() / ".dotnet" / "tools" / "dotnet-symbol.exe"),
     ],
@@ -395,6 +412,13 @@ def _build_env() -> dict[str, str]:
         dotnet_root = str(Path(dotnet_executable).parent)
         env.setdefault("DOTNET_ROOT", dotnet_root)
         env.setdefault("DOTNET_ROOT_ARM64", dotnet_root)
+    for executable in ("g++", "clang++", "cl"):
+        resolved = _resolve_executable(executable)
+        if not resolved:
+            continue
+        tool_bin = str(Path(resolved).parent)
+        if tool_bin not in path_entries:
+            path_entries.insert(0, tool_bin)
     env["PATH"] = os.pathsep.join(path_entries)
     return env
 

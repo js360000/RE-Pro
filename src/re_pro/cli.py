@@ -72,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--llm-reasoning", default=DEFAULT_LLM_REASONING, help="Reasoning effort: none, low, medium, high, xhigh")
     analyze.add_argument("--llm-verbosity", default=DEFAULT_LLM_VERBOSITY, help="Text verbosity: low, medium, high")
     analyze.add_argument("--llm-background", action="store_true", help="Run the GPT-assisted reconstruction in a detached background job")
+    analyze.add_argument("--llm-foreground", action="store_true", help="Run the LLM-assisted reconstruction in the foreground so model output appears in CLI logs")
     analyze.add_argument("--llm-max-output", type=int, default=DEFAULT_LLM_MAX_OUTPUT, help="Maximum output tokens for the GPT-assisted pass")
     analyze.add_argument("--llm-task", default="", help="Optional operator steering prompt for the GPT-assisted pass")
     analyze.add_argument("--llm-no-install", action="store_true", help="Disallow the GPT-assisted pass from installing missing dependencies in its recompile workspace")
@@ -264,7 +265,7 @@ def main() -> int:
             codex_auth_path=_merge_value(args.codex_auth_json, "", llm_profile.codex_auth_path),
             reasoning_effort=_merge_value(args.llm_reasoning, DEFAULT_LLM_REASONING, llm_profile.reasoning_effort),
             verbosity=_merge_value(args.llm_verbosity, DEFAULT_LLM_VERBOSITY, llm_profile.verbosity),
-            background=bool(args.llm_background or llm_profile.background),
+            background=False if args.llm_foreground else bool(args.llm_background or llm_profile.background),
             max_output_tokens=_merge_value(args.llm_max_output, DEFAULT_LLM_MAX_OUTPUT, llm_profile.max_output_tokens),
             user_task=_merge_value(args.llm_task, "", llm_profile.user_task),
             allow_dependency_installs=False if args.llm_no_install else llm_profile.allow_dependency_installs,
@@ -327,6 +328,8 @@ def main() -> int:
         if args.json:
             print(json.dumps(report.to_dict(), indent=2))
         else:
+            if args.llm_foreground:
+                _emit_llm_markdown_report(report)
             print(f"Analysis complete: {report.output_dir}")
             print(f"Profile saved: {profile_path}")
         return 0
@@ -574,6 +577,46 @@ def main() -> int:
 
     parser.print_help()
     return 1
+
+
+def _emit_llm_markdown_report(report) -> None:
+    parts: list[str] = []
+    summary = _read_report_artifact(report, "LLM reconstruction summary")
+    status = _read_report_artifact(report, "LLM reconstruction status")
+    log_text = _read_report_artifact(report, "LLM reconstruction log")
+    if summary:
+        parts.extend(["## LLM Reconstruction Output", "", summary.strip()])
+    if status:
+        parts.extend(["", "## LLM Status", "", "```json", status.strip(), "```"])
+    if log_text:
+        parts.extend(["", "## LLM Log", "", "```text", log_text.strip(), "```"])
+    markdown = "\n".join(parts).strip()
+    if markdown:
+        _print_markdown(markdown)
+
+
+def _read_report_artifact(report, description: str) -> str:
+    for artifact in getattr(report, "artifacts", []):
+        if getattr(artifact, "description", "") != description:
+            continue
+        path = Path(getattr(artifact, "path", ""))
+        if not path.exists() or not path.is_file():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return ""
+    return ""
+
+
+def _print_markdown(markdown: str) -> None:
+    try:
+        from rich.console import Console
+        from rich.markdown import Markdown
+    except Exception:
+        print(markdown)
+        return
+    Console().print(Markdown(markdown))
 
 
 def _run_android_jadx_job(apk_path: Path, output_dir: Path, jobs: int) -> int:

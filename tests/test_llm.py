@@ -127,21 +127,27 @@ class LlmAssistTests(unittest.TestCase):
             targeted = output_dir / "ghidra" / "exports" / "targeted_decompilation.json"
             targeted.parent.mkdir(parents=True)
             targeted.write_text(json.dumps({"methods": [{"name": "Fixture::AppController::Run"}]}), encoding="utf-8")
+            callgraph = output_dir / "ghidra" / "exports" / "class_callgraph_manifest.json"
+            callgraph.write_text(json.dumps({"classes": [{"name": "Fixture::AppController"}]}), encoding="utf-8")
             pseudo_dir = output_dir / "ghidra" / "exports" / "class_pseudo_cpp"
             pseudo_dir.mkdir()
             (pseudo_dir / "Fixture__AppController.cpp").write_text("void Fixture::AppController::Run() {}\n", encoding="utf-8")
             report.add_artifact(str(status_path), "metadata", "Ghidra status")
             report.add_artifact(str(pseudo_dir), "directory", "Ghidra class-scoped pseudo-C++ directory")
+            report.add_artifact(str(callgraph), "metadata", "Ghidra class callgraph manifest")
             report.add_artifact(str(targeted), "metadata", "Ghidra targeted pseudo-code export")
             context = AnalysisContext(target=target, output_dir=output_dir)
 
             items = LLMAssistAnalyzer()._build_context_items(context, report, llm_dir)
             names = [str(item["name"]) for item in items]
 
+            self.assertTrue(any("class_callgraph_manifest.json" in name for name in names))
             self.assertTrue(any("targeted_decompilation.json" in name for name in names))
             self.assertTrue(any("Fixture__AppController.cpp" in name for name in names))
+            callgraph_index = next(index for index, name in enumerate(names) if "class_callgraph_manifest.json" in name)
             targeted_index = next(index for index, name in enumerate(names) if "targeted_decompilation.json" in name)
             status_index = next(index for index, name in enumerate(names) if "status.json" in name)
+            self.assertLess(callgraph_index, status_index)
             self.assertLess(targeted_index, status_index)
 
     def test_foreground_llm_waits_for_pending_tool_status(self) -> None:

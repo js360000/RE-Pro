@@ -157,6 +157,62 @@ def describe_callers(function):
     return callers
 
 
+def describe_callees(function):
+    callees = []
+    seen = set()
+    reference_manager = currentProgram.getReferenceManager()
+    listing = currentProgram.getListing()
+    try:
+        body = function.getBody()
+    except Exception:
+        body = None
+    if body is None:
+        return callees
+    try:
+        instructions = listing.getInstructions(body, True)
+    except Exception:
+        return callees
+    while instructions.hasNext():
+        if len(callees) >= MAX_CALLSITE_REFS:
+            break
+        instruction = instructions.next()
+        try:
+            references = reference_manager.getReferencesFrom(instruction.getAddress())
+        except Exception:
+            continue
+        for reference in references:
+            if len(callees) >= MAX_CALLSITE_REFS:
+                break
+            try:
+                ref_type = reference.getReferenceType()
+                if ref_type is None or (not ref_type.isCall() and ref_type != RefType.COMPUTED_CALL):
+                    continue
+                to_address = reference.getToAddress()
+                if to_address is None:
+                    continue
+                callee = getFunctionAt(to_address)
+                if callee is None:
+                    callee = getFunctionContaining(to_address)
+                key = (str(instruction.getAddress()), str(to_address))
+                if key in seen:
+                    continue
+                seen.add(key)
+                callees.append(
+                    {
+                        "from_address": str(instruction.getAddress()),
+                        "to_address": str(to_address),
+                        "entry_point": str(callee.getEntryPoint()) if callee else str(to_address),
+                        "name": callee.getName() if callee else None,
+                        "signature": to_text(callee.getSignature()) if callee else None,
+                        "namespace": callee.getParentNamespace().getName(True) if callee and callee.getParentNamespace() else None,
+                        "ref_type": to_text(ref_type),
+                    }
+                )
+            except Exception:
+                continue
+    return callees
+
+
 def pointer_size():
     try:
         return int(currentProgram.getDefaultPointerSize())
@@ -444,7 +500,64 @@ def argument_position_for_storage(storage):
     return None
 
 
-def load_target_function_addresses(manifest_path):
+def load_target_selection(selection_path):
+    if not selection_path or not os.path.isfile(selection_path):
+        return {}
+    try:
+        payload = read_json(selection_path)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    by_address = {}
+    for target in payload.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        address = to_text(target.get("address") or "").strip().lower()
+        if not address:
+            continue
+        if not address.startswith("0x"):
+            try:
+                address = "0x%x" % int(address, 16)
+            except Exception:
+                continue
+        by_address[address] = target
+    return by_address
+
+
+def load_target_selection_addresses(selection_path):
+    if not selection_path or not os.path.isfile(selection_path):
+        return []
+    try:
+        payload = read_json(selection_path)
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    addresses = []
+    seen = set()
+    for target in payload.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        address = to_text(target.get("address") or "").strip().lower()
+        if not address:
+            continue
+        if not address.startswith("0x"):
+            try:
+                address = "0x%x" % int(address, 16)
+            except Exception:
+                continue
+        if address in seen:
+            continue
+        seen.add(address)
+        addresses.append(address)
+    return addresses
+
+
+def load_target_function_addresses(manifest_path, selection_path=None):
+    selection_addresses = load_target_selection_addresses(selection_path)
+    if selection_addresses:
+        return selection_addresses
     if not manifest_path or not os.path.isfile(manifest_path):
         return []
     try:
@@ -537,10 +650,11 @@ def is_related_class_function(namespace_lower, signature_lower, name_lower, full
     return False
 
 
-def decompile_target_functions(manifest_path, output_path):
+def decompile_target_functions(manifest_path, output_path, selection_path=None):
     if not manifest_path or not output_path:
         return []
-    addresses = load_target_function_addresses(manifest_path)
+    selection = load_target_selection(selection_path)
+    addresses = load_target_function_addresses(manifest_path, selection_path)
     if not addresses:
         return []
 
@@ -597,10 +711,15 @@ def decompile_target_functions(manifest_path, output_path):
                 "return_type": to_text(function.getReturnType()),
                 "parameters": describe_parameters(function),
                 "callers": describe_callers(function),
+                "callees": describe_callees(function),
                 "decompile_success": False,
             }
+            entry["callee_count"] = len(entry.get("callees") or [])
             entry["caller_count"] = len(entry.get("callers") or [])
             entry["result_hints"] = [caller.get("result_hint") for caller in entry.get("callers") or [] if caller.get("result_hint")]
+            target_metadata = selection.get(str(entry.get("requested_address") or "").lower()) or selection.get(str(entry.get("entry_point") or "").lower())
+            if target_metadata:
+                entry["target_selection"] = target_metadata
             if result is None:
                 entry["error"] = "no_decompile_result"
                 entries.append(entry)
@@ -689,6 +808,7 @@ if len(args) < 1:
 output_dir = args[0]
 rtti_manifest_path = args[1] if len(args) >= 2 else ""
 targeted_decompilation_path = args[2] if len(args) >= 3 else ""
+target_selection_path = args[3] if len(args) >= 4 else ""
 ensure_dir(output_dir)
 
 functions = []
@@ -774,7 +894,7 @@ program_info = {
     "analysis_timed_out": analysis_timed_out,
 }
 
-targeted_decompilations = decompile_target_functions(rtti_manifest_path, targeted_decompilation_path)
+targeted_decompilations = decompile_target_functions(rtti_manifest_path, targeted_decompilation_path, target_selection_path)
 write_json(os.path.join(output_dir, "program_info.json"), program_info)
 write_json_compact(os.path.join(output_dir, "functions.json"), functions)
 write_json(os.path.join(output_dir, "strings.json"), strings)

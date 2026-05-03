@@ -76,7 +76,15 @@ class ExternalToolAnalyzer(Analyzer):
         class_pseudocode_dir = export_dir / "class_pseudo_cpp"
         native_pseudocode_dir = context.output_dir / "native" / "pseudo_cpp"
         enriched_manifest_path = export_dir / "enriched_class_manifest.json"
+        target_selection_path = export_dir / "target_selection.json"
+        class_callgraph_path = export_dir / "class_callgraph_manifest.json"
         targeted_method_count = self._count_rtti_methods(rtti_manifest_path) if rtti_manifest_path.exists() else 0
+        target_selection = self._build_ghidra_target_selection(
+            rtti_manifest_path,
+            target_selection_path,
+            limit=self.GHIDRA_TARGETED_DECOMPILATION_LIMIT,
+            source_hints=self._class_source_hints(report),
+        )
         started_at = self._utcnow()
         request_path.write_text(
             json.dumps(
@@ -97,9 +105,12 @@ class ExternalToolAnalyzer(Analyzer):
                     "class_pseudocode_dir": str(class_pseudocode_dir),
                     "native_class_pseudocode_dir": str(native_pseudocode_dir),
                     "enriched_manifest_path": str(enriched_manifest_path),
+                    "target_selection_path": str(target_selection_path) if target_selection_path.exists() else "",
+                    "class_callgraph_path": str(class_callgraph_path),
                     "targeted_decompilation_limit": self.GHIDRA_TARGETED_DECOMPILATION_LIMIT,
                     "targeted_decompilation_timeout_seconds": self.GHIDRA_TARGETED_DECOMPILATION_TIMEOUT_SECONDS,
                     "targeted_method_count": targeted_method_count,
+                    "target_selection_count": len(target_selection.get("targets", [])) if target_selection else 0,
                 },
                 indent=2,
             ),
@@ -115,6 +126,7 @@ class ExternalToolAnalyzer(Analyzer):
                 "project_root": str(project_root),
                 "analysis_timeout_seconds": self.GHIDRA_ANALYSIS_TIMEOUT_SECONDS,
                 "targeted_method_count": targeted_method_count,
+                "target_selection_count": len(target_selection.get("targets", [])) if target_selection else 0,
             },
         )
         self._spawn_background_job(request_path, context, label="ghidra")
@@ -124,10 +136,12 @@ class ExternalToolAnalyzer(Analyzer):
         report.add_artifact(str(log_path), "log", "Ghidra headless log")
         report.add_artifact(str(script_log_path), "log", "Ghidra script log")
         report.add_artifact(str(status_path), "metadata", "Ghidra headless status")
+        report.add_artifact(str(target_selection_path), "json", "Ghidra ranked target selection")
         report.add_artifact(str(targeted_decompilation_path), "json", "Ghidra targeted pseudo-code export")
         report.add_artifact(str(targeted_pseudocode_dir), "directory", "Ghidra targeted pseudo-code directory")
         report.add_artifact(str(class_pseudocode_dir), "directory", "Ghidra class-scoped pseudo-C++ directory")
         report.add_artifact(str(enriched_manifest_path), "json", "Ghidra enriched class manifest")
+        report.add_artifact(str(class_callgraph_path), "json", "Ghidra class callgraph manifest")
         report.add_finding(
             "Ghidra analysis started",
             "Ghidra headless was detached into a background job so the main analysis pipeline could continue without blocking.",
@@ -141,8 +155,8 @@ class ExternalToolAnalyzer(Analyzer):
             report.add_note(str(profile["note"]))
         if targeted_method_count:
             report.add_note(
-                f"Ghidra queued targeted decompilation for up to {min(targeted_method_count, self.GHIDRA_TARGETED_DECOMPILATION_LIMIT)} "
-                f"RTTI-derived method candidate(s) into {targeted_decompilation_path}."
+                f"Ghidra queued targeted decompilation for {len(target_selection.get('targets', [])) if target_selection else min(targeted_method_count, self.GHIDRA_TARGETED_DECOMPILATION_LIMIT)} "
+                f"ranked RTTI-derived method candidate(s) into {targeted_decompilation_path}."
             )
         context.log(f"Spawned background Ghidra job for {context.target.name} into {project_root}")
         return True
@@ -342,8 +356,10 @@ class ExternalToolAnalyzer(Analyzer):
             "program_info.json": ("json", "Ghidra program metadata export"),
             "functions.json": ("json", "Ghidra function export"),
             "strings.json": ("json", "Ghidra strings export"),
+            "target_selection.json": ("json", "Ghidra ranked target selection"),
             "targeted_decompilation.json": ("json", "Ghidra targeted pseudo-code export"),
             "enriched_class_manifest.json": ("json", "Ghidra enriched class manifest"),
+            "class_callgraph_manifest.json": ("json", "Ghidra class callgraph manifest"),
         }
         count = 0
         for filename, (category, description) in descriptions.items():
@@ -369,6 +385,214 @@ class ExternalToolAnalyzer(Analyzer):
             if language_id:
                 report.add_note(f"Ghidra imported the program as {language_id}.")
         return count
+
+    @staticmethod
+    def _build_ghidra_target_selection(
+        manifest_path: Path,
+        output_path: Path,
+        *,
+        limit: int,
+        source_hints: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        payload = ExternalToolAnalyzer._read_json(manifest_path)
+        if not payload:
+            return {"targets": [], "total_candidates": 0, "limit": limit}
+
+        source_hints = source_hints or {}
+        classes = [entry for entry in payload.get("classes") or [] if isinstance(entry, dict)]
+        address_counts: dict[str, int] = {}
+        for class_entry in classes:
+            for method in class_entry.get("methods") or []:
+                if not isinstance(method, dict):
+                    continue
+                address = ExternalToolAnalyzer._normalize_target_address(method.get("address") or method.get("entry_point"))
+                if address:
+                    address_counts[address] = address_counts.get(address, 0) + 1
+
+        candidates: list[dict[str, object]] = []
+        for class_index, class_entry in enumerate(classes):
+            class_name = str(class_entry.get("name") or "").strip()
+            if not class_name:
+                continue
+            hinted_source_path = ExternalToolAnalyzer._source_hint_for_class(class_name, source_hints)
+            class_score, class_reasons = ExternalToolAnalyzer._score_target_class(class_entry, hinted_source_path=hinted_source_path)
+            methods = [method for method in class_entry.get("methods") or [] if isinstance(method, dict)]
+            for method_index, method in enumerate(methods):
+                address = ExternalToolAnalyzer._normalize_target_address(method.get("address") or method.get("entry_point"))
+                if not address:
+                    continue
+                method_score, method_reasons = ExternalToolAnalyzer._score_target_method(method, address_counts.get(address, 0))
+                display_name = str(method.get("display_name") or method.get("name") or f"fn_{address[2:]}").strip()
+                candidates.append(
+                    {
+                        "address": address,
+                        "class_name": class_name,
+                        "qualified_name": str(method.get("qualified_name") or f"{class_name}::{display_name}"),
+                        "method_name": display_name,
+                        "slot": method.get("slot"),
+                        "vtable_rva": method.get("vtable_rva"),
+                        "method_kind": method.get("method_kind"),
+                        "semantic_alias": method.get("semantic_alias"),
+                        "source_path": class_entry.get("source_path") or class_entry.get("debug_source_path") or hinted_source_path,
+                        "score": class_score + method_score,
+                        "reasons": class_reasons + method_reasons,
+                        "class_index": class_index,
+                        "method_index": method_index,
+                        "shared_vtable_target_count": address_counts.get(address, 1),
+                    }
+                )
+
+        candidates.sort(key=lambda item: (-int(item.get("score") or 0), int(item.get("class_index") or 0), int(item.get("method_index") or 0)))
+        selected: list[dict[str, object]] = []
+        by_address: dict[str, dict[str, object]] = {}
+        for candidate in candidates:
+            address = str(candidate.get("address") or "")
+            existing = by_address.get(address)
+            if existing is not None:
+                existing.setdefault("class_candidates", []).append(
+                    {
+                        "class_name": candidate.get("class_name"),
+                        "qualified_name": candidate.get("qualified_name"),
+                        "slot": candidate.get("slot"),
+                        "vtable_rva": candidate.get("vtable_rva"),
+                    }
+                )
+                continue
+            candidate["rank"] = len(selected) + 1
+            candidate["class_candidates"] = [
+                {
+                    "class_name": candidate.get("class_name"),
+                    "qualified_name": candidate.get("qualified_name"),
+                    "slot": candidate.get("slot"),
+                    "vtable_rva": candidate.get("vtable_rva"),
+                }
+            ]
+            selected.append(candidate)
+            by_address[address] = candidate
+            if len(selected) >= max(0, limit):
+                break
+
+        result = {
+            "artifact_type": "ghidra_target_selection",
+            "strategy": "ranked_msvc_rtti_vtable_methods",
+            "limit": limit,
+            "total_candidates": len(candidates),
+            "selected_count": len(selected),
+            "targets": selected,
+        }
+        ensure_dir(output_path.parent)
+        output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        return result
+
+    @staticmethod
+    def _normalize_target_address(value: object) -> str | None:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+        if text.startswith("ram:"):
+            text = text.split(":", 1)[1]
+        if text.startswith("0x"):
+            raw = text[2:]
+        else:
+            raw = text
+        try:
+            return f"0x{int(raw, 16):x}"
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _score_target_class(class_entry: dict[str, object], hinted_source_path: str | None = None) -> tuple[int, list[str]]:
+        class_name = str(class_entry.get("name") or "").strip()
+        lowered = class_name.lower()
+        score = 20
+        reasons = ["rtti_class"]
+        if class_entry.get("source_path") or class_entry.get("debug_source_path") or hinted_source_path:
+            score += 45
+            reasons.append("has_source_path")
+        if class_entry.get("members"):
+            score += 15
+            reasons.append("has_recovered_members")
+        if class_entry.get("base_classes"):
+            score += 10
+            reasons.append("has_inheritance")
+        if lowered.startswith(("std::", "__std::", "type_info", "__crt", "atl::", "wil::")):
+            score -= 35
+            reasons.append("runtime_library_class")
+        elif class_name:
+            score += 20
+            reasons.append("named_application_or_library_class")
+        return score, reasons
+
+    @staticmethod
+    def _class_source_hints(report) -> dict[str, str]:
+        hints: dict[str, str] = {}
+        def remember(key: str, value: str) -> None:
+            existing = hints.get(key)
+            if existing is None or (existing.lower().endswith((".h", ".hh", ".hpp", ".hxx")) and value.lower().endswith((".c", ".cc", ".cpp", ".cxx"))):
+                hints[key] = value
+
+        for source in getattr(report, "recovered_sources", []) or []:
+            original_path = str(getattr(source, "original_path", "") or "").replace("\\", "/").strip()
+            if not original_path:
+                continue
+            canonical = original_path.replace("/", "::")
+            if "::" in canonical:
+                without_extension = canonical.rsplit(".", 1)[0]
+                parts = [part for part in without_extension.split("::") if part]
+                for index in range(len(parts)):
+                    remember("::".join(parts[index:]).lower(), original_path)
+                if parts:
+                    remember(parts[-1].lower(), original_path)
+            stem = Path(original_path).stem.strip()
+            if not stem:
+                continue
+            remember(stem.lower(), original_path)
+            parts = [part for part in original_path.split("/") if part]
+            if len(parts) >= 2:
+                namespace_key = "::".join([Path(part).stem if index == len(parts) - 1 else part for index, part in enumerate(parts[-3:])])
+                remember(namespace_key.lower(), original_path)
+        return hints
+
+    @staticmethod
+    def _source_hint_for_class(class_name: str, source_hints: dict[str, str]) -> str | None:
+        lowered = class_name.lower()
+        short = class_name.split("::")[-1].lower()
+        if lowered in source_hints:
+            return source_hints[lowered]
+        if short in source_hints:
+            return source_hints[short]
+        return None
+
+    @staticmethod
+    def _score_target_method(method: dict[str, object], address_count: int | None) -> tuple[int, list[str]]:
+        score = 10
+        reasons = ["vtable_method"]
+        name = str(method.get("display_name") or method.get("name") or "").strip()
+        lowered = name.lower()
+        kind = str(method.get("method_kind") or "").strip()
+        if kind:
+            score += 25
+            reasons.append(f"method_kind:{kind}")
+        if method.get("semantic_alias"):
+            score += 20
+            reasons.append("semantic_alias")
+        if method.get("caller_count"):
+            score += min(30, int(method.get("caller_count") or 0) * 5)
+            reasons.append("has_callers")
+        if method.get("params") or method.get("return_type"):
+            score += 10
+            reasons.append("typed_signature")
+        if lowered and not lowered.startswith(("vf_", "sub_", "fun_", "thunk_")):
+            score += 15
+            reasons.append("semantic_name")
+        shared_count = int(address_count or 1)
+        if shared_count > 1:
+            score -= min(40, (shared_count - 1) * 8)
+            reasons.append("shared_vtable_target")
+        else:
+            score += 12
+            reasons.append("unique_vtable_target")
+        return score, reasons
 
     @classmethod
     def run_background_job(cls, request_path: Path) -> int:
@@ -436,6 +660,7 @@ class ExternalToolAnalyzer(Analyzer):
             str(export_dir),
             str(payload.get("rtti_manifest_path") or ""),
             str(payload.get("targeted_decompilation_path") or ""),
+            str(payload.get("target_selection_path") or ""),
             "-scriptlog",
             str(script_log_path),
             "-log",
@@ -478,14 +703,23 @@ class ExternalToolAnalyzer(Analyzer):
             enriched_manifest_path,
             native_class_pseudocode_dir=native_class_pseudocode_dir,
         )
+        class_callgraph_path = Path(str(payload.get("class_callgraph_path") or export_dir / "class_callgraph_manifest.json"))
+        class_callgraph = cls._write_class_callgraph_manifest(
+            payload,
+            targeted_decompilation,
+            enriched_manifest_path,
+            class_callgraph_path,
+        )
         exports = [
             str(path)
             for path in [
                 export_dir / "program_info.json",
                 export_dir / "functions.json",
                 export_dir / "strings.json",
+                Path(str(payload.get("target_selection_path") or export_dir / "target_selection.json")),
                 Path(str(payload.get("targeted_decompilation_path") or export_dir / "targeted_decompilation.json")),
                 enriched_manifest_path,
+                class_callgraph_path,
             ]
             if path.exists()
         ]
@@ -507,8 +741,10 @@ class ExternalToolAnalyzer(Analyzer):
             "analysis_timed_out": bool((program_info or {}).get("analysis_timed_out", False)),
             "language_id": (program_info or {}).get("language_id"),
             "targeted_method_count": int(payload.get("targeted_method_count") or 0),
+            "target_selection_count": int(payload.get("target_selection_count") or 0),
             "decompiled_function_count": len(targeted_decompilation),
             "class_source_count": class_source_count,
+            "class_callgraph_class_count": len(class_callgraph.get("classes", [])) if class_callgraph else 0,
         }
         message = stderr.strip() or stdout.strip()
         if message:
@@ -749,6 +985,142 @@ class ExternalToolAnalyzer(Analyzer):
                 )
             )
         return len(generated)
+
+    @staticmethod
+    def _write_class_callgraph_manifest(
+        payload: dict[str, object],
+        targeted_decompilation: list[dict[str, object]],
+        enriched_manifest_path: Path,
+        output_path: Path,
+    ) -> dict[str, object]:
+        manifest_path = enriched_manifest_path
+        if not manifest_path.exists():
+            manifest_path = Path(str(payload.get("rtti_manifest_path") or ""))
+        recovered = ExternalToolAnalyzer._read_json(manifest_path)
+        if not recovered:
+            return {}
+        decompiled_by_address = {
+            ExternalToolAnalyzer._normalize_target_address(entry.get("entry_point") or entry.get("requested_address")): entry
+            for entry in targeted_decompilation
+            if isinstance(entry, dict)
+            and ExternalToolAnalyzer._normalize_target_address(entry.get("entry_point") or entry.get("requested_address"))
+        }
+        classes: list[dict[str, object]] = []
+        functions: list[dict[str, object]] = []
+        for class_entry in recovered.get("classes") or []:
+            if not isinstance(class_entry, dict):
+                continue
+            class_name = str(class_entry.get("name") or "").strip()
+            if not class_name:
+                continue
+            methods: list[dict[str, object]] = []
+            class_edges: list[dict[str, object]] = []
+            for method in class_entry.get("methods") or []:
+                if not isinstance(method, dict):
+                    continue
+                address = ExternalToolAnalyzer._normalize_target_address(method.get("address") or method.get("entry_point"))
+                if not address:
+                    continue
+                decompiled = decompiled_by_address.get(address, {})
+                call_edges = list(method.get("class_call_edges") or [])
+                for callee in decompiled.get("callees") or []:
+                    if not isinstance(callee, dict):
+                        continue
+                    target_address = ExternalToolAnalyzer._normalize_target_address(callee.get("entry_point") or callee.get("to_address"))
+                    edge = {
+                        "target": callee.get("name") or target_address,
+                        "target_address": target_address,
+                        "callsite": ExternalToolAnalyzer._normalize_target_address(callee.get("from_address")),
+                        "ref_type": callee.get("ref_type"),
+                    }
+                    if edge not in call_edges:
+                        call_edges.append(edge)
+                method_context = {
+                    "class_name": class_name,
+                    "name": method.get("display_name") or method.get("name"),
+                    "qualified_name": method.get("qualified_name") or f"{class_name}::{method.get('display_name') or method.get('name') or address}",
+                    "address": address,
+                    "slot": method.get("slot"),
+                    "vtable_rva": method.get("vtable_rva"),
+                    "method_kind": method.get("method_kind"),
+                    "semantic_alias": method.get("semantic_alias"),
+                    "return_type": method.get("return_type") or decompiled.get("return_type"),
+                    "params": method.get("params") or decompiled.get("parameters"),
+                    "decompiler": {
+                        "tool": "ghidra",
+                        "success": decompiled.get("decompile_success"),
+                        "name": decompiled.get("name"),
+                        "signature": decompiled.get("signature"),
+                        "pseudo_path": decompiled.get("pseudo_path"),
+                        "target_selection": decompiled.get("target_selection"),
+                    },
+                    "callers": decompiled.get("callers") or method.get("caller_names") or [],
+                    "callees": decompiled.get("callees") or [],
+                    "call_edges": call_edges,
+                    "llm_priority": ExternalToolAnalyzer._llm_method_priority(method, decompiled),
+                    "evidence": ExternalToolAnalyzer._method_context_evidence(method, decompiled),
+                }
+                methods.append(method_context)
+                functions.append(method_context)
+                for edge in call_edges:
+                    if isinstance(edge, dict):
+                        class_edges.append({"source": method_context["qualified_name"], **edge})
+            if methods:
+                methods.sort(key=lambda item: (-int(item.get("llm_priority") or 0), str(item.get("qualified_name") or "")))
+                classes.append(
+                    {
+                        "name": class_name,
+                        "source_path": class_entry.get("source_path"),
+                        "base_classes": class_entry.get("base_classes"),
+                        "estimated_object_size": class_entry.get("estimated_object_size"),
+                        "methods": methods,
+                        "call_edges": class_edges[:512],
+                        "recovery_capabilities": class_entry.get("recovery_capabilities"),
+                    }
+                )
+        result = {
+            "artifact_type": "ghidra_class_callgraph_manifest",
+            "strategy": "msvc_rtti_vtable_methods_linked_to_ghidra_decompilation_and_calls",
+            "class_count": len(classes),
+            "function_count": len(functions),
+            "classes": classes,
+            "functions": sorted(functions, key=lambda item: (-int(item.get("llm_priority") or 0), str(item.get("qualified_name") or ""))),
+        }
+        ensure_dir(output_path.parent)
+        output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        return result
+
+    @staticmethod
+    def _llm_method_priority(method: dict[str, object], decompiled: dict[str, object]) -> int:
+        score = 20
+        if decompiled.get("decompile_success"):
+            score += 50
+        if method.get("method_kind"):
+            score += 15
+        if method.get("semantic_alias"):
+            score += 10
+        if decompiled.get("callees"):
+            score += min(25, len(decompiled.get("callees") or []) * 5)
+        if decompiled.get("callers"):
+            score += min(25, len(decompiled.get("callers") or []) * 5)
+        return score
+
+    @staticmethod
+    def _method_context_evidence(method: dict[str, object], decompiled: dict[str, object]) -> list[str]:
+        evidence = ["msvc_rtti_vtable"]
+        if method.get("semantic_alias"):
+            evidence.append("semantic_alias")
+        if method.get("method_kind"):
+            evidence.append("method_kind")
+        if decompiled.get("decompile_success"):
+            evidence.append("ghidra_decompiled_body")
+        if decompiled.get("target_selection"):
+            evidence.append("ranked_target_selection")
+        if decompiled.get("callees"):
+            evidence.append("ghidra_call_edges")
+        if decompiled.get("callers"):
+            evidence.append("ghidra_callers")
+        return evidence
 
     @staticmethod
     def _write_status(path: Path, payload: dict[str, object]) -> None:

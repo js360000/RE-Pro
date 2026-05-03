@@ -87,8 +87,10 @@ class ExternalToolAnalyzerTests(unittest.TestCase):
             )
             (export_dir / "functions.json").write_text("[]", encoding="utf-8")
             (export_dir / "strings.json").write_text("[]", encoding="utf-8")
+            (export_dir / "target_selection.json").write_text("{}", encoding="utf-8")
             (export_dir / "targeted_decompilation.json").write_text("[]", encoding="utf-8")
             (export_dir / "enriched_class_manifest.json").write_text("{}", encoding="utf-8")
+            (export_dir / "class_callgraph_manifest.json").write_text("{}", encoding="utf-8")
             (export_dir / "pseudo_code").mkdir()
             (export_dir / "class_pseudo_cpp").mkdir()
             report = AnalysisReport(target="sample", output_dir="out")
@@ -98,8 +100,10 @@ class ExternalToolAnalyzerTests(unittest.TestCase):
             descriptions = [artifact.description for artifact in report.artifacts]
             self.assertIn("Ghidra function export", descriptions)
             self.assertIn("Ghidra strings export", descriptions)
+            self.assertIn("Ghidra ranked target selection", descriptions)
             self.assertIn("Ghidra targeted pseudo-code export", descriptions)
             self.assertIn("Ghidra enriched class manifest", descriptions)
+            self.assertIn("Ghidra class callgraph manifest", descriptions)
             self.assertIn("Ghidra targeted pseudo-code directory", descriptions)
             self.assertIn("Ghidra class-scoped pseudo-C++ directory", descriptions)
             self.assertTrue(any("Ghidra imported the program as MIPS:LE:64:64-32addr" in note for note in report.notes))
@@ -126,10 +130,17 @@ class ExternalToolAnalyzerTests(unittest.TestCase):
                     {
                         "classes": [
                             {
-                                "name": "Foo",
+                                "name": "std::allocator<int>",
                                 "methods": [
-                                    {"address": "0x140001000"},
-                                    {"address": "0x140001020"},
+                                    {"address": "0x140009000", "name": "vf_140009000"},
+                                ],
+                            },
+                            {
+                                "name": "Fixture::AppController",
+                                "source_path": "src/AppController.cpp",
+                                "methods": [
+                                    {"address": "0x140001000", "display_name": "Run", "qualified_name": "Fixture::AppController::Run"},
+                                    {"address": "0x140001020", "display_name": "__scalar_deleting_destructor", "method_kind": "scalar_deleting_destructor"},
                                 ],
                             }
                         ]
@@ -176,19 +187,78 @@ class ExternalToolAnalyzerTests(unittest.TestCase):
                 request_payload["native_class_pseudocode_dir"],
                 str(output_dir / "native" / "pseudo_cpp"),
             )
-            self.assertEqual(request_payload["targeted_method_count"], 2)
+            self.assertEqual(request_payload["targeted_method_count"], 3)
+            self.assertEqual(request_payload["target_selection_count"], 3)
+            self.assertEqual(
+                request_payload["target_selection_path"],
+                str(output_dir / "ghidra" / "exports" / "target_selection.json"),
+            )
+            self.assertEqual(
+                request_payload["class_callgraph_path"],
+                str(output_dir / "ghidra" / "exports" / "class_callgraph_manifest.json"),
+            )
+            target_selection = json.loads((output_dir / "ghidra" / "exports" / "target_selection.json").read_text(encoding="utf-8"))
+            self.assertEqual(target_selection["targets"][0]["class_name"], "Fixture::AppController")
+            self.assertIn("has_source_path", target_selection["targets"][0]["reasons"])
             self.assertEqual(status_payload["state"], "queued")
 
             artifact_descriptions = [artifact.description for artifact in report.artifacts]
             self.assertIn("Ghidra headless log", artifact_descriptions)
             self.assertIn("Ghidra headless status", artifact_descriptions)
+            self.assertIn("Ghidra ranked target selection", artifact_descriptions)
             self.assertIn("Ghidra targeted pseudo-code export", artifact_descriptions)
             self.assertIn("Ghidra enriched class manifest", artifact_descriptions)
+            self.assertIn("Ghidra class callgraph manifest", artifact_descriptions)
             self.assertIn("Ghidra targeted pseudo-code directory", artifact_descriptions)
             self.assertIn("Ghidra class-scoped pseudo-C++ directory", artifact_descriptions)
             self.assertTrue(any("background" in note.lower() for note in report.notes))
             self.assertTrue(any("profile note" in note for note in report.notes))
             self.assertTrue(any("targeted decompilation" in note.lower() for note in report.notes))
+
+    def test_build_ghidra_target_selection_deduplicates_and_prioritizes_named_classes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "msvc_rtti_classes.json"
+            output_path = root / "target_selection.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "classes": [
+                            {
+                                "name": "std::exception",
+                                "methods": [{"address": "0x1400f0000", "name": "vf_1400f0000"}],
+                            },
+                            {
+                                "name": "Fixture::AppController",
+                                "source_path": "src/AppController.cpp",
+                                "methods": [
+                                    {
+                                        "address": "0x140001000",
+                                        "display_name": "Run",
+                                        "qualified_name": "Fixture::AppController::Run",
+                                        "method_kind": "ordinary_method",
+                                    },
+                                    {
+                                        "address": "0x140001000",
+                                        "display_name": "RunAlias",
+                                        "qualified_name": "Fixture::AppController::RunAlias",
+                                    },
+                                ],
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = ExternalToolAnalyzer._build_ghidra_target_selection(manifest_path, output_path, limit=8)
+
+            self.assertTrue(output_path.exists())
+            self.assertEqual(result["selected_count"], 2)
+            self.assertEqual(result["targets"][0]["address"], "0x140001000")
+            self.assertEqual(result["targets"][0]["class_name"], "Fixture::AppController")
+            self.assertEqual(len(result["targets"][0]["class_candidates"]), 2)
+            self.assertIn("has_source_path", result["targets"][0]["reasons"])
 
     def test_pe_tools_job_skips_redundant_deep_exports_after_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

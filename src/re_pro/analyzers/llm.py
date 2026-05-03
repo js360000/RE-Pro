@@ -282,6 +282,10 @@ class LLMAssistAnalyzer(Analyzer):
             if "pseudo_code" in text or "pseudo-code" in text:
                 return 8
         priority_markers = [
+            ("class_callgraph_manifest", 0),
+            ("class callgraph manifest", 0),
+            ("target_selection", 0),
+            ("ranked target selection", 0),
             ("targeted_decompilation", 0),
             ("targeted pseudo-code", 0),
             ("enriched_class_manifest", 1),

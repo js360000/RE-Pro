@@ -254,6 +254,7 @@ class AnalysisIndexTests(unittest.TestCase):
                             ghidra_dir.mkdir(parents=True, exist_ok=True)
                             ghidra_functions = ghidra_dir / "functions.json"
                             ghidra_targeted = ghidra_dir / "targeted_decompilation.json"
+                            ghidra_callgraph = ghidra_dir / "class_callgraph_manifest.json"
                             ghidra_functions.write_text(json.dumps([
                                 {"name": "sub_140001000", "entry_point": "140001000", "signature": "undefined8 sub_140001000(void)"}
                             ]), encoding="utf-8")
@@ -272,12 +273,52 @@ class AnalysisIndexTests(unittest.TestCase):
                                     "callers": [
                                         {"caller_name": "main", "caller_entry_point": "0x140000100", "from_address": "0x140000188", "ref_type": "UNCONDITIONAL_CALL"}
                                     ],
+                                    "callee_count": 1,
+                                    "callees": [
+                                        {"name": "puts", "entry_point": "0x140002000", "from_address": "0x140001020", "ref_type": "UNCONDITIONAL_CALL"}
+                                    ],
                                     "decompile_success": True,
                                     "decompiled_c": "undefined8 sub_140001000(void) { return 1; }"
                                 }
                             ]), encoding="utf-8")
+                            ghidra_callgraph.write_text(json.dumps({
+                                "artifact_type": "ghidra_class_callgraph_manifest",
+                                "class_count": 1,
+                                "function_count": 1,
+                                "classes": [
+                                    {
+                                        "name": "Foo",
+                                        "estimated_object_size": 40,
+                                        "methods": [
+                                            {
+                                                "class_name": "Foo",
+                                                "name": "__scalar_deleting_destructor",
+                                                "qualified_name": "Foo::__scalar_deleting_destructor",
+                                                "address": "0x140001000",
+                                                "slot": 0,
+                                                "vtable_rva": "0x2128",
+                                                "method_kind": "scalar_deleting_destructor",
+                                                "semantic_alias": "~Foo",
+                                                "decompiler": {"tool": "ghidra", "success": True, "name": "sub_140001000"},
+                                                "callers": [
+                                                    {"caller_name": "main", "caller_entry_point": "0x140000100", "from_address": "0x140000188"}
+                                                ],
+                                                "callees": [
+                                                    {"name": "puts", "entry_point": "0x140002000", "from_address": "0x140001020"}
+                                                ],
+                                                "call_edges": [
+                                                    {"target": "puts", "target_address": "0x140002000"}
+                                                ],
+                                                "llm_priority": 95,
+                                                "evidence": ["msvc_rtti_vtable", "ghidra_decompiled_body", "ghidra_call_edges"]
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }, indent=2), encoding="utf-8")
                             report.add_artifact(str(ghidra_functions), "json", "Ghidra function export")
                             report.add_artifact(str(ghidra_targeted), "json", "Ghidra targeted pseudo-code export")
+                            report.add_artifact(str(ghidra_callgraph), "json", "Ghidra class callgraph manifest")
 
 
                     def register_analyzers():
@@ -312,6 +353,9 @@ class AnalysisIndexTests(unittest.TestCase):
             base_id = "class:msvc_rtti:base"
             method_id = "function:msvc_rtti:0x140001000"
             ghidra_method_id = "function:ghidra:0x140001000"
+            context_method_id = "function:class_context:0x140001000"
+            context_callee_id = "function:class_context:0x140002000"
+            context_class_id = "class:class_context:foo"
             vtable_id = "vtable:msvc_rtti:0x2128"
             field_id = "field:msvc_rtti:foo::name_"
 
@@ -320,11 +364,17 @@ class AnalysisIndexTests(unittest.TestCase):
             self.assertIn(method_id, entities)
             self.assertIn(vtable_id, entities)
             self.assertIn(field_id, entities)
+            self.assertIn(context_class_id, entities)
+            self.assertIn(context_method_id, entities)
+            self.assertIn(context_callee_id, entities)
             self.assertIn((class_id, "inherits_from", base_id), relations)
             self.assertIn((class_id, "owns_vtable", vtable_id), relations)
             self.assertIn((class_id, "declares_method_candidate", method_id), relations)
             self.assertIn((class_id, "declares_field_candidate", field_id), relations)
+            self.assertIn((context_class_id, "declares_contextualized_method", context_method_id), relations)
+            self.assertIn((context_method_id, "calls", context_callee_id), relations)
             self.assertIn((method_id, "correlates_with", ghidra_method_id), relations)
+            self.assertIn((method_id, "correlates_with", context_method_id), relations)
             self.assertEqual(entities[method_id]["label"], "Foo::__scalar_deleting_destructor")
             self.assertEqual(entities[method_id]["attributes"].get("semantic_alias"), "~Foo")
             self.assertEqual(entities[class_id]["attributes"].get("estimated_object_size"), 40)
@@ -340,7 +390,9 @@ class AnalysisIndexTests(unittest.TestCase):
                 "undefined8 sub_140001000(void) { return 1; }",
             )
             self.assertEqual(entities[ghidra_method_id]["attributes"].get("caller_count"), 1)
+            self.assertEqual(entities[ghidra_method_id]["attributes"].get("callee_count"), 1)
             self.assertEqual(entities[ghidra_method_id]["attributes"].get("return_type"), "undefined8")
+            self.assertEqual(entities[context_method_id]["attributes"].get("llm_priority"), 95)
 
 
 if __name__ == "__main__":

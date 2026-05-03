@@ -35,6 +35,10 @@ CLASS_EXPORT_DESCRIPTIONS = {
     "Ghidra enriched class manifest": "msvc_rtti",
 }
 
+CLASS_CONTEXT_EXPORT_DESCRIPTIONS = {
+    "Ghidra class callgraph manifest": "class_context",
+}
+
 
 def ingest_structured_artifacts(index: AnalysisIndex, report) -> dict[str, int]:
     target_id = index.make_id("target", report.target)
@@ -64,6 +68,10 @@ def ingest_structured_artifacts(index: AnalysisIndex, report) -> dict[str, int]:
         tool_name = CLASS_EXPORT_DESCRIPTIONS.get(artifact.description)
         if tool_name:
             _ingest_class_manifest(index, target_id, path, tool_name, function_entities)
+            continue
+        tool_name = CLASS_CONTEXT_EXPORT_DESCRIPTIONS.get(artifact.description)
+        if tool_name:
+            _ingest_class_context_manifest(index, target_id, path, tool_name, function_entities)
 
     function_correlations = _correlate_by_address(index, function_entities, predicate="correlates_with")
     string_correlations = _correlate_by_address(index, string_entities, predicate="correlates_with")
@@ -213,9 +221,12 @@ def _ingest_decompiled_export(
                 "return_type": entry.get("return_type"),
                 "params": entry.get("parameters"),
                 "caller_count": entry.get("caller_count"),
+                "callee_count": entry.get("callee_count"),
                 "callers": entry.get("callers"),
+                "callees": entry.get("callees"),
                 "callsite_argument_hints": entry.get("callsite_argument_hints"),
                 "result_hints": entry.get("result_hints"),
+                "target_selection": entry.get("target_selection"),
                 "source_path": str(path),
             },
         )
@@ -224,6 +235,113 @@ def _ingest_decompiled_export(
         index.add_relation(function_id, "originates_from_artifact", artifact_id, attributes={"tool": tool_name})
         if address:
             function_entities[(tool_name, address)] = function_id
+
+
+def _ingest_class_context_manifest(
+    index: AnalysisIndex,
+    target_id: str,
+    path: Path,
+    tool_name: str,
+    function_entities: dict[tuple[str, str], str],
+) -> None:
+    payload = _load_json_object(path)
+    if not isinstance(payload, dict):
+        return
+    artifact_id = index.add_entity(
+        "artifact",
+        str(path),
+        path.name,
+        attributes={"path": str(path), "category": "json", "description": f"{tool_name} class callgraph manifest"},
+    )
+    tool_id = index.add_entity("tool", tool_name, "Ghidra class context", attributes={"kind": "class_callgraph_fusion"})
+    for class_entry in payload.get("classes") or []:
+        if not isinstance(class_entry, dict):
+            continue
+        class_name = str(class_entry.get("name") or "").strip()
+        if not class_name:
+            continue
+        class_id = index.add_entity(
+            "class",
+            f"{tool_name}:{class_name.lower()}",
+            class_name,
+            attributes={
+                "tool": tool_name,
+                "source_path": str(path),
+                "base_classes": class_entry.get("base_classes"),
+                "estimated_object_size": class_entry.get("estimated_object_size"),
+                "recovery_capabilities": class_entry.get("recovery_capabilities"),
+            },
+        )
+        index.add_relation(target_id, "contains_class_context", class_id, attributes={"tool": tool_name})
+        index.add_relation(tool_id, "contextualized_class", class_id, attributes={"source_path": str(path)})
+        index.add_relation(class_id, "originates_from_artifact", artifact_id, attributes={"tool": tool_name})
+        for method in class_entry.get("methods") or []:
+            if not isinstance(method, dict):
+                continue
+            address = _normalize_address(method.get("address"))
+            label = str(method.get("qualified_name") or method.get("name") or address or "method")
+            function_id = index.add_entity(
+                "function",
+                f"{tool_name}:{address or label.lower()}",
+                label,
+                attributes={
+                    "tool": tool_name,
+                    "address": address,
+                    "class_name": class_name,
+                    "slot": method.get("slot"),
+                    "vtable_rva": method.get("vtable_rva"),
+                    "method_kind": method.get("method_kind"),
+                    "semantic_alias": method.get("semantic_alias"),
+                    "return_type": method.get("return_type"),
+                    "params": method.get("params"),
+                    "decompiler": method.get("decompiler"),
+                    "callers": method.get("callers"),
+                    "callees": method.get("callees"),
+                    "call_edges": method.get("call_edges"),
+                    "llm_priority": method.get("llm_priority"),
+                    "evidence": method.get("evidence"),
+                    "source_path": str(path),
+                },
+            )
+            index.add_relation(class_id, "declares_contextualized_method", function_id, attributes={"tool": tool_name})
+            index.add_relation(tool_id, "contextualized_function", function_id, attributes={"source_path": str(path)})
+            index.add_relation(function_id, "originates_from_artifact", artifact_id, attributes={"tool": tool_name})
+            if address:
+                function_entities[(tool_name, address)] = function_id
+            for callee in method.get("callees") or []:
+                if not isinstance(callee, dict):
+                    continue
+                callee_address = _normalize_address(callee.get("entry_point") or callee.get("to_address"))
+                callee_label = str(callee.get("name") or callee_address or "callee")
+                callee_id = index.add_entity(
+                    "function",
+                    f"{tool_name}:{callee_address or callee_label.lower()}",
+                    callee_label,
+                    attributes={
+                        "tool": tool_name,
+                        "address": callee_address,
+                        "signature": callee.get("signature"),
+                        "namespace": callee.get("namespace"),
+                        "source_path": str(path),
+                    },
+                )
+                index.add_relation(function_id, "calls", callee_id, attributes={"tool": tool_name, "callsite": callee.get("from_address")})
+                if callee_address:
+                    function_entities[(tool_name, callee_address)] = callee_id
+            for caller in method.get("callers") or []:
+                if not isinstance(caller, dict):
+                    continue
+                caller_address = _normalize_address(caller.get("caller_entry_point"))
+                caller_label = str(caller.get("caller_name") or caller_address or "caller")
+                caller_id = index.add_entity(
+                    "function",
+                    f"{tool_name}:{caller_address or caller_label.lower()}",
+                    caller_label,
+                    attributes={"tool": tool_name, "address": caller_address, "source_path": str(path)},
+                )
+                index.add_relation(caller_id, "calls", function_id, attributes={"tool": tool_name, "callsite": caller.get("from_address")})
+                if caller_address:
+                    function_entities[(tool_name, caller_address)] = caller_id
 
 
 def _ingest_class_manifest(

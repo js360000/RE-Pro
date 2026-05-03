@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
 from ..android_resources import parse_resources_arsc
+from ..background_launch import build_re_pro_background_command
+from ..background_launch import build_re_pro_background_env
+from ..background_launch import re_pro_background_cwd
 from ..dex import is_dex_file, parse_dex_metadata
 from ..sourcemap import restore_sources_from_map
 from ..tooling import REPO_ROOT
@@ -482,10 +484,7 @@ class AndroidAnalyzer(Analyzer):
             ),
             encoding="utf-8",
         )
-        launcher = [
-            sys.executable,
-            "-m",
-            "re_pro.cli",
+        launcher = build_re_pro_background_command(
             "android-jadx-job",
             "--apk",
             str(apk_target),
@@ -493,18 +492,14 @@ class AndroidAnalyzer(Analyzer):
             str(output_dir),
             "--jobs",
             str(jobs),
-        ]
-        env = os.environ.copy()
-        src_root = str((REPO_ROOT / "src").resolve())
-        existing_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = src_root if not existing_pythonpath else src_root + os.pathsep + existing_pythonpath
+        )
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         subprocess.Popen(
             launcher,
-            cwd=str(REPO_ROOT),
-            env=env,
+            cwd=str(re_pro_background_cwd()),
+            env=build_re_pro_background_env(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

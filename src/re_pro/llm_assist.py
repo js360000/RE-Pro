@@ -63,6 +63,7 @@ def run_llm_assist_job(
         started_at=_utc_now(),
         model=settings.get("model", "gpt-5.4"),
         auth=auth_status,
+        phase="initializing",
     )
     log("Preparing LLM reconstruction run")
     log(
@@ -101,16 +102,32 @@ def run_llm_assist_job(
         validations: list[dict[str, Any]] = []
         max_tool_rounds = 24
         tool_rounds = 0
+        write_status(
+            "running",
+            started_at=_utc_now(),
+            model=settings.get("model", "gpt-5.4"),
+            auth=auth_status,
+            phase="submitting_initial_request",
+            tool_rounds=0,
+        )
         response = client.responses.create(
             model=settings.get("model", "gpt-5.4"),
             instructions=_build_instructions(payload),
             input=_build_user_input(payload),
             reasoning={"effort": settings.get("reasoning_effort", "high")},
             text={"verbosity": settings.get("verbosity", "medium")},
-            max_output_tokens=int(settings.get("max_output_tokens", 12000)),
+            max_output_tokens=int(settings.get("max_output_tokens", 128000) or 128000),
             tools=tools,
         )
         log(f"Initial response received from model {settings.get('model', 'gpt-5.4')}")
+        write_status(
+            "running",
+            model=settings.get("model", "gpt-5.4"),
+            auth=auth_status,
+            phase="initial_response_received",
+            response_id=_get_value(response, "id"),
+            tool_rounds=0,
+        )
 
         while tool_rounds < max_tool_rounds:
             function_calls = _extract_function_calls(response)
@@ -118,10 +135,30 @@ def run_llm_assist_job(
                 break
             tool_rounds += 1
             log(f"Processing tool round {tool_rounds} with {len(function_calls)} function call(s)")
+            write_status(
+                "running",
+                model=settings.get("model", "gpt-5.4"),
+                auth=auth_status,
+                phase="tool_round",
+                response_id=_get_value(response, "id"),
+                tool_rounds=tool_rounds,
+                pending_tool_calls=len(function_calls),
+            )
             tool_outputs = []
             for call in function_calls:
                 tool_name = call["name"]
                 arguments = _json_loads(call["arguments"])
+                log(f"Starting tool {tool_name}")
+                write_status(
+                    "running",
+                    model=settings.get("model", "gpt-5.4"),
+                    auth=auth_status,
+                    phase="tool_call",
+                    response_id=_get_value(response, "id"),
+                    tool_rounds=tool_rounds,
+                    active_tool=tool_name,
+                    active_tool_arguments=_preview_json(arguments),
+                )
                 result = _dispatch_tool_call(
                     tool_name,
                     arguments,
@@ -143,14 +180,35 @@ def run_llm_assist_job(
                     }
                 )
                 log(f"Executed tool {tool_name}")
+                write_status(
+                    "running",
+                    model=settings.get("model", "gpt-5.4"),
+                    auth=auth_status,
+                    phase="tool_call_completed",
+                    response_id=_get_value(response, "id"),
+                    tool_rounds=tool_rounds,
+                    last_tool=tool_name,
+                    written_files=len(writes),
+                    validations=len(validations),
+                )
             writes_manifest_path.write_text(json.dumps(writes, indent=2), encoding="utf-8")
+            write_status(
+                "running",
+                model=settings.get("model", "gpt-5.4"),
+                auth=auth_status,
+                phase="submitting_tool_outputs",
+                response_id=_get_value(response, "id"),
+                tool_rounds=tool_rounds,
+                written_files=len(writes),
+                validations=len(validations),
+            )
             response = client.responses.create(
                 model=settings.get("model", "gpt-5.4"),
                 previous_response_id=_get_value(response, "id"),
                 input=tool_outputs,
                 reasoning={"effort": settings.get("reasoning_effort", "high")},
                 text={"verbosity": settings.get("verbosity", "medium")},
-                max_output_tokens=int(settings.get("max_output_tokens", 12000)),
+                max_output_tokens=int(settings.get("max_output_tokens", 128000) or 128000),
                 tools=tools,
             )
 
@@ -253,6 +311,15 @@ def _run_codex_cli_assist_job(
 
     log("Running LLM reconstruction through Codex CLI backend")
     log(f"Codex CLI command: {' '.join(command[:-1])} -")
+    write_status(
+        "running",
+        model=settings.get("model", "gpt-5.4"),
+        auth=auth_status,
+        backend="codex-cli",
+        phase="codex_cli_starting",
+        prompt_path=str(prompt_path),
+        transcript_path=str(transcript_path),
+    )
     with transcript_path.open("w", encoding="utf-8") as transcript:
         process = subprocess.Popen(
             command,
@@ -265,16 +332,49 @@ def _run_codex_cli_assist_job(
             encoding="utf-8",
             errors="replace",
         )
+        write_status(
+            "running",
+            model=settings.get("model", "gpt-5.4"),
+            auth=auth_status,
+            backend="codex-cli",
+            phase="codex_cli_running",
+            pid=process.pid,
+            prompt_path=str(prompt_path),
+            transcript_path=str(transcript_path),
+        )
         assert process.stdin is not None
         process.stdin.write(prompt)
         process.stdin.close()
         assert process.stdout is not None
+        line_count = 0
         for line in process.stdout:
+            line_count += 1
             clean = line.rstrip()
             transcript.write(line)
+            transcript.flush()
             if clean:
                 log(f"[codex-cli] {clean}")
+                write_status(
+                    "running",
+                    model=settings.get("model", "gpt-5.4"),
+                    auth=auth_status,
+                    backend="codex-cli",
+                    phase="codex_cli_stream",
+                    pid=process.pid,
+                    transcript_path=str(transcript_path),
+                    codex_output_lines=line_count,
+                    last_output=clean[-1000:],
+                )
         exit_code = process.wait()
+    write_status(
+        "running",
+        model=settings.get("model", "gpt-5.4"),
+        auth=auth_status,
+        backend="codex-cli",
+        phase="codex_cli_exited",
+        exit_code=exit_code,
+        transcript_path=str(transcript_path),
+    )
 
     if exit_code != 0:
         raise RuntimeError(f"Codex CLI reconstruction failed with exit code {exit_code}. See {transcript_path}.")
@@ -962,6 +1062,14 @@ def _json_loads(value: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _preview_json(value: Any, *, max_chars: int = 1000) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        text = str(value)
+    return text[:max_chars]
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:

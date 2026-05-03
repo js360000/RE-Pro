@@ -265,7 +265,7 @@ re-pro analyze path\to\target.exe -o analysis_output --llm-auto --llm-background
 Set model, reasoning, verbosity, and output limits explicitly:
 
 ```bash
-re-pro analyze path\to\target.exe -o analysis_output --llm --llm-model gpt-5.4 --llm-reasoning medium --llm-verbosity medium --llm-max-output 16000
+re-pro analyze path\to\target.exe -o analysis_output --llm --llm-model gpt-5.5 --llm-reasoning medium --llm-verbosity medium --llm-max-output 128000
 ```
 
 Disable autonomous dependency installation or build checks:

@@ -264,11 +264,15 @@ class MainWindow(QMainWindow):
         self._current_index_workflow: dict | None = None
         self._ghidra_job_paths: dict[str, str] = {}
         self._pe_job_paths: dict[str, str] = {}
+        self._llm_job_paths: dict[str, str] = {}
         self._mcp_details: dict | None = None
         self._browser_manifest: dict | None = None
         self._current_browser_node_id: str = ""
         self.ghidra_log_window: BackgroundLogWindow | None = None
         self.pe_log_window: BackgroundLogWindow | None = None
+        self.llm_refresh_timer = QTimer(self)
+        self.llm_refresh_timer.setInterval(1500)
+        self.llm_refresh_timer.timeout.connect(self._refresh_llm_live_view)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -410,7 +414,7 @@ class MainWindow(QMainWindow):
         self.llm_verbosity_combo = QComboBox()
         self.llm_verbosity_combo.addItems(["low", "medium", "high"])
         self.llm_verbosity_combo.setCurrentText("medium")
-        self.llm_max_output_input = QLineEdit("12000")
+        self.llm_max_output_input = QLineEdit("128000")
         llm_params.addWidget(QLabel("Model"))
         llm_params.addWidget(self.llm_model_input)
         llm_params.addWidget(QLabel("Auth"))
@@ -976,6 +980,84 @@ class MainWindow(QMainWindow):
             parts.extend(["", "## LLM Log", "", "```text", log_text.strip(), "```"])
         self._set_markdown_text(self.llm_text, "\n".join(parts).strip())
 
+    def _refresh_llm_live_view(self) -> None:
+        if not self._llm_job_paths:
+            self.llm_refresh_timer.stop()
+            return
+        self._set_markdown_text(self.llm_text, self._build_llm_live_markdown(self._llm_job_paths))
+        if not self._is_background_job_active(self._llm_job_paths):
+            self.llm_refresh_timer.stop()
+
+    def _build_llm_live_markdown(self, job_paths: dict[str, str]) -> str:
+        status_path = self._path_or_none(job_paths.get("status"))
+        status_payload = self._read_json_file(status_path)
+        llm_dir = self._path_or_none(job_paths.get("llm_dir"))
+        if llm_dir is None and status_payload:
+            llm_dir = self._path_or_none(str(status_payload.get("llm_dir", "")))
+
+        log_path = self._path_or_none(job_paths.get("log"))
+        summary_path = self._path_or_none(job_paths.get("summary"))
+        if llm_dir is not None:
+            log_path = log_path or llm_dir / "llm.log"
+            summary_path = summary_path or llm_dir / "assistant_summary.md"
+            transcript_path = llm_dir / "codex_cli_transcript.log"
+            writes_path = llm_dir / "written_files.json"
+            validation_path = llm_dir / "validation_results.json"
+        else:
+            transcript_path = self._path_or_none(job_paths.get("transcript"))
+            writes_path = self._path_or_none(job_paths.get("written_files"))
+            validation_path = self._path_or_none(job_paths.get("validation"))
+
+        parts: list[str] = ["## LLM Live Reconstruction", ""]
+        if status_payload:
+            parts.extend(["### Status", "", "```json", json.dumps(status_payload, indent=2), "```"])
+        elif status_path is not None:
+            parts.extend(["### Status", "", f"Waiting for status file: `{status_path}`"])
+        else:
+            parts.extend(["### Status", "", "No LLM status artifact is available for this run."])
+
+        if log_path is not None:
+            parts.extend(["", "### Live Log", "", "```text", BackgroundLogWindow._tail_text(log_path).strip(), "```"])
+        if transcript_path is not None and transcript_path.exists():
+            parts.extend(
+                [
+                    "",
+                    "### Codex Transcript",
+                    "",
+                    "```text",
+                    BackgroundLogWindow._tail_text(transcript_path).strip(),
+                    "```",
+                ]
+            )
+        if summary_path is not None and summary_path.exists():
+            parts.extend(["", "### Assistant Summary", "", self._read_text_file(summary_path).strip()])
+        if writes_path is not None and writes_path.exists():
+            parts.extend(["", "### Written Files", "", "```json", self._read_text_file(writes_path).strip(), "```"])
+        if validation_path is not None and validation_path.exists():
+            parts.extend(["", "### Validation", "", "```json", self._read_text_file(validation_path).strip(), "```"])
+        return "\n".join(parts).strip()
+
+    @staticmethod
+    def _path_or_none(value: str | Path | None) -> Path | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return Path(text) if text else None
+
+    @staticmethod
+    def _read_json_file(path: Path | None) -> dict | None:
+        if path is None or not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _read_text_file(path: Path, *, max_bytes: int = 240_000) -> str:
+        return BackgroundLogWindow._tail_text(path, max_bytes=max_bytes)
+
     @staticmethod
     def _set_markdown_text(widget: QTextEdit, text: str) -> None:
         if hasattr(widget, "setMarkdown"):
@@ -1267,6 +1349,8 @@ class MainWindow(QMainWindow):
     def _clear_background_job_paths(self) -> None:
         self._ghidra_job_paths = {}
         self._pe_job_paths = {}
+        self._llm_job_paths = {}
+        self.llm_refresh_timer.stop()
         self.open_ghidra_log_button.setEnabled(False)
         self.open_pe_log_button.setEnabled(False)
         if self.ghidra_log_window is not None:
@@ -1283,12 +1367,33 @@ class MainWindow(QMainWindow):
             "log": self._find_artifact_path(report, "PE tools background log"),
             "status": self._find_artifact_path(report, "PE tools background status"),
         }
+        llm_status = self._find_artifact_path(report, "LLM reconstruction status")
+        llm_log = self._find_artifact_path(report, "LLM reconstruction log")
+        llm_summary = self._find_artifact_path(report, "LLM reconstruction summary")
+        llm_dir = ""
+        status_payload = self._read_json_file(self._path_or_none(llm_status))
+        if status_payload:
+            llm_dir = str(status_payload.get("llm_dir", "")).strip()
+        elif llm_status:
+            llm_dir = str(Path(llm_status).parent)
+        self._llm_job_paths = {
+            "log": llm_log,
+            "status": llm_status,
+            "summary": llm_summary,
+            "llm_dir": llm_dir,
+        }
         self.open_ghidra_log_button.setEnabled(bool(self._ghidra_job_paths["log"] or self._ghidra_job_paths["status"]))
         self.open_pe_log_button.setEnabled(bool(self._pe_job_paths["log"] or self._pe_job_paths["status"]))
         if self.ghidra_log_window is not None:
             self.ghidra_log_window.set_job_paths(self._ghidra_job_paths["log"], self._ghidra_job_paths["status"])
         if self.pe_log_window is not None:
             self.pe_log_window.set_job_paths(self._pe_job_paths["log"], self._pe_job_paths["status"])
+        if self._llm_job_paths["status"] or self._llm_job_paths["log"] or self._llm_job_paths["summary"]:
+            self._refresh_llm_live_view()
+            if self._is_background_job_active(self._llm_job_paths):
+                self.llm_refresh_timer.start()
+            else:
+                self.llm_refresh_timer.stop()
 
     def _auto_open_active_background_logs(self) -> None:
         if self._is_background_job_active(self._ghidra_job_paths):
@@ -1351,7 +1456,7 @@ class MainWindow(QMainWindow):
             reasoning_effort=self.llm_reasoning_combo.currentText(),
             verbosity=self.llm_verbosity_combo.currentText(),
             background=self.llm_background_checkbox.isChecked(),
-            max_output_tokens=self._parse_int(self.llm_max_output_input.text().strip(), default=12000),
+            max_output_tokens=self._parse_int(self.llm_max_output_input.text().strip(), default=128000),
             user_task=self.llm_task_input.toPlainText().strip(),
             allow_dependency_installs=self.llm_install_checkbox.isChecked(),
             run_recompile_checks=self.llm_build_checkbox.isChecked(),

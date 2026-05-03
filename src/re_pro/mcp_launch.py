@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .background_launch import build_re_pro_background_command
+from .background_launch import build_re_pro_background_env
 from .utils import ensure_dir
 
 
@@ -25,10 +27,7 @@ def build_mcp_launch_details(
     output = Path(output_root).resolve()
     tools = Path(tools_root).resolve()
     plugins = [str(Path(path).resolve()) for path in (plugin_dirs or [])]
-    command = [
-        sys.executable,
-        "-m",
-        "re_pro.cli",
+    command = build_re_pro_background_command(
         "mcp-server",
         "--transport",
         transport,
@@ -42,7 +41,7 @@ def build_mcp_launch_details(
         str(output),
         "--tools-root",
         str(tools),
-    ]
+    )
     for plugin_dir in plugins:
         command.extend(["--plugin-dir", plugin_dir])
 
@@ -59,15 +58,17 @@ def build_mcp_launch_details(
         "command": command,
     }
     if transport == "stdio":
+        server_config: dict[str, Any] = {
+            "command": command[0],
+            "args": command[1:],
+        }
+        if not getattr(sys, "frozen", False):
+            server_config["env"] = {
+                "PYTHONPATH": str((Path(__file__).resolve().parents[2] / "src").resolve()),
+            }
         details["client_config"] = {
             "mcpServers": {
-                server_name: {
-                    "command": command[0],
-                    "args": command[1:],
-                    "env": {
-                        "PYTHONPATH": str((Path(__file__).resolve().parents[2] / "src").resolve()),
-                    },
-                }
+                server_name: server_config
             }
         }
         details["notes"] = [
@@ -119,10 +120,7 @@ def start_mcp_server_process(
     config_path = destination / "mcp_client_config.json"
     config_path.write_text(json.dumps(details["client_config"], indent=2), encoding="utf-8")
 
-    env = os.environ.copy()
-    src_root = str((Path(__file__).resolve().parents[2] / "src").resolve())
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = src_root if not existing_pythonpath else src_root + os.pathsep + existing_pythonpath
+    env = build_re_pro_background_env()
     log_handle = log_path.open("a", encoding="utf-8")
     process = subprocess.Popen(
         details["command"],

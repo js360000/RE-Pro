@@ -13,7 +13,7 @@ class LlmAssistSettings:
     reasoning_effort: str = "high"
     verbosity: str = "medium"
     background: bool = True
-    max_output_tokens: int = 12000
+    max_output_tokens: int = 128000
     user_task: str = ""
     allow_dependency_installs: bool = True
     run_recompile_checks: bool = True
@@ -30,7 +30,7 @@ class LlmAssistSettings:
             reasoning_effort=str(payload.get("reasoning_effort", "high")),
             verbosity=str(payload.get("verbosity", "medium")),
             background=bool(payload.get("background", True)),
-            max_output_tokens=int(payload.get("max_output_tokens", 12000) or 12000),
+            max_output_tokens=int(payload.get("max_output_tokens", 128000) or 128000),
             user_task=str(payload.get("user_task", "")),
             allow_dependency_installs=bool(payload.get("allow_dependency_installs", True)),
             run_recompile_checks=bool(payload.get("run_recompile_checks", True)),

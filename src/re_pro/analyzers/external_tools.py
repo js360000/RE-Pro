@@ -4,12 +4,14 @@ import os
 import json
 import subprocess
 import shutil
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..api_semantics import refine_targeted_decompilation
+from ..background_launch import build_re_pro_background_command
+from ..background_launch import build_re_pro_background_env
+from ..background_launch import re_pro_background_cwd
 from ..msvc_pseudo_cpp import enrich_recovered_classes, write_pseudo_class_sources
 from ..tooling import REPO_ROOT, get_ghidra_install_root, list_ghidra_languages, resolve_command, run_command_logged
 from ..utils import ensure_dir, safe_slug
@@ -857,25 +859,14 @@ class ExternalToolAnalyzer(Analyzer):
 
     @classmethod
     def _spawn_background_job(cls, request_path: Path, context, *, label: str) -> None:
-        launcher = [
-            sys.executable,
-            "-m",
-            "re_pro.cli",
-            "external-tool-job",
-            "--request",
-            str(request_path),
-        ]
-        env = os.environ.copy()
-        src_root = str((REPO_ROOT / "src").resolve())
-        existing_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = src_root if not existing_pythonpath else src_root + os.pathsep + existing_pythonpath
+        launcher = build_re_pro_background_command("external-tool-job", "--request", str(request_path))
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         subprocess.Popen(
             launcher,
-            cwd=str(REPO_ROOT),
-            env=env,
+            cwd=str(re_pro_background_cwd()),
+            env=build_re_pro_background_env(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

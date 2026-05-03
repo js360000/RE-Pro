@@ -3,14 +3,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
+from ..background_launch import build_re_pro_background_command
+from ..background_launch import build_re_pro_background_env
+from ..background_launch import re_pro_background_cwd
 from ..llm_auth import llm_auth_available
 from ..llm_auth import llm_auth_missing_message
 from ..llm_assist import run_llm_assist_job
-from ..tooling import REPO_ROOT
 from ..utils import ensure_dir, safe_slug
 from .base import Analyzer
 
@@ -467,25 +468,14 @@ class LLMAssistAnalyzer(Analyzer):
 
     @staticmethod
     def _spawn_background_job(request_path: Path, context) -> None:
-        launcher = [
-            sys.executable,
-            "-m",
-            "re_pro.cli",
-            "llm-job",
-            "--request",
-            str(request_path),
-        ]
-        env = os.environ.copy()
-        src_root = str((REPO_ROOT / "src").resolve())
-        existing_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = src_root if not existing_pythonpath else src_root + os.pathsep + existing_pythonpath
+        launcher = build_re_pro_background_command("llm-job", "--request", str(request_path))
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         subprocess.Popen(
             launcher,
-            cwd=str(REPO_ROOT),
-            env=env,
+            cwd=str(re_pro_background_cwd()),
+            env=build_re_pro_background_env(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

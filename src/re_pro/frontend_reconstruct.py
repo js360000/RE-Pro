@@ -1056,7 +1056,7 @@ def _prepare_or_run_llm_source_grade(
     try:
         client = llm_client_factory() if llm_client_factory else _default_openai_client(llm_settings)
         model = str(getattr(llm_settings, "model", "gpt-5.4"))
-        max_output = min(int(getattr(llm_settings, "max_output_tokens", 12000) or 12000), 16000)
+        max_output = min(int(getattr(llm_settings, "max_output_tokens", 128000) or 128000), 128000)
         for request in requests[: min(3, len(requests))]:
             prompt = Path(str(request["prompt"])).read_text(encoding="utf-8", errors="ignore")
             response = client.responses.create(

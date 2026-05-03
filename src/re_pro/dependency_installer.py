@@ -56,6 +56,8 @@ class DependencyInstaller:
         jadx_asset = self._select_asset(jadx, lambda name: name.startswith("jadx-") and name.endswith(".zip") and "gui" not in name.lower())
         apktool = self._latest_github_release("iBotPeaches/Apktool")
         apktool_asset = self._select_asset(apktool, lambda name: name.startswith("apktool_") and name.endswith(".jar"))
+        pspdecrypt = self._latest_github_release("John-K/pspdecrypt")
+        pspdecrypt_asset = self._select_asset_or_none(pspdecrypt, lambda name: name.endswith("-windows.zip"))
         jdk = self._latest_temurin_21()
         specs = [
             {
@@ -128,7 +130,32 @@ class DependencyInstaller:
                 "module_name": "frida",
                 "packages": ["frida", "frida-tools"],
             },
+            {
+                "name": "Electron ASAR",
+                "archive_name": "electron-asar.npm",
+                "expected_leaf": "asar/node_modules/.bin/asar.cmd",
+                "kind": "npm-install",
+                "package_id": "@electron/asar",
+                "tool_path": "asar",
+            },
+            {
+                "name": "psp-packer",
+                "archive_name": "psp-packer.cargo",
+                "expected_leaf": "psp-packer/bin/psp-packer.exe",
+                "kind": "cargo-install",
+                "package_id": "psp-packer",
+                "tool_path": "psp-packer",
+            },
         ]
+        if pspdecrypt_asset is not None:
+            specs.append(
+                {
+                    "name": "pspdecrypt",
+                    "url": pspdecrypt_asset["url"],
+                    "archive_name": pspdecrypt_asset["name"],
+                    "expected_leaf": "pspdecrypt.exe",
+                }
+            )
         if platform.machine().upper() == "ARM64" and sysconfig.get_platform().lower() != "win-arm64":
             python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
             specs.insert(
@@ -163,6 +190,13 @@ class DependencyInstaller:
 
     @staticmethod
     def _select_asset(release: dict[str, object], predicate: Callable[[str], bool]) -> dict[str, str]:
+        asset = DependencyInstaller._select_asset_or_none(release, predicate)
+        if asset is not None:
+            return asset
+        raise RuntimeError(f"No matching asset found in release {release.get('tag_name')}")
+
+    @staticmethod
+    def _select_asset_or_none(release: dict[str, object], predicate: Callable[[str], bool]) -> dict[str, str] | None:
         for asset in release.get("assets") or []:
             name = asset["name"]
             if predicate(name):
@@ -171,7 +205,7 @@ class DependencyInstaller:
                     "url": asset["browser_download_url"],
                     "root": name.removesuffix(".zip"),
                 }
-        raise RuntimeError(f"No matching asset found in release {release.get('tag_name')}")
+        return None
 
     @staticmethod
     def _read_json(url: str) -> dict | list:
@@ -272,6 +306,28 @@ class DependencyInstaller:
             process = subprocess.run(command, capture_output=True, text=True, errors="ignore", check=False)
             if process.returncode != 0:
                 raise RuntimeError(process.stderr.strip() or process.stdout.strip() or f"Failed to install {' '.join(packages)}")
+            return
+        if kind == "npm-install":
+            npm = shutil.which("npm")
+            if not npm:
+                raise RuntimeError(f"Cannot install {spec['name']} because npm is not on PATH.")
+            tool_dir = ensure_dir(self.tools_root / spec.get("tool_path", spec["package_id"]))
+            command = [npm, "install", "--prefix", str(tool_dir), spec["package_id"]]
+            self._log(f"Installing {spec['package_id']} into {tool_dir}")
+            process = subprocess.run(command, capture_output=True, text=True, errors="ignore", check=False)
+            if process.returncode != 0:
+                raise RuntimeError(process.stderr.strip() or process.stdout.strip() or f"Failed to install {spec['package_id']}")
+            return
+        if kind == "cargo-install":
+            cargo = shutil.which("cargo")
+            if not cargo:
+                raise RuntimeError(f"Cannot install {spec['name']} because cargo is not on PATH.")
+            tool_dir = ensure_dir(self.tools_root / spec.get("tool_path", spec["package_id"]))
+            command = [cargo, "install", spec["package_id"], "--root", str(tool_dir), "--locked", "--force"]
+            self._log(f"Installing {spec['package_id']} into {tool_dir}")
+            process = subprocess.run(command, capture_output=True, text=True, errors="ignore", check=False)
+            if process.returncode != 0:
+                raise RuntimeError(process.stderr.strip() or process.stdout.strip() or f"Failed to install {spec['package_id']}")
             return
         if kind == "embedded-python":
             if archive_path is None:

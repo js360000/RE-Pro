@@ -165,6 +165,183 @@ class AnalysisIndexTests(unittest.TestCase):
             self.assertTrue(any("normalized 2 function candidate(s) and 2 string candidate(s)" in note for note in report.notes))
             self.assertTrue(any("Cross-tool correlation linked 1 function address match(es) and 1 string address match(es)." in note for note in report.notes))
 
+    def test_analysis_index_ingests_msvc_rtti_class_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plugin_dir = root / "plugins"
+            plugin_dir.mkdir()
+            plugin_path = plugin_dir / "rtti_plugin.py"
+            plugin_path.write_text(
+                textwrap.dedent(
+                    """
+                    import json
+                    from re_pro.analyzers.base import Analyzer
+
+
+                    class RTTIPluginAnalyzer(Analyzer):
+                        name = "RTTI plugin analyzer"
+
+                        def analyze(self, context, report) -> None:
+                            native_dir = context.output_dir / "native"
+                            native_dir.mkdir(parents=True, exist_ok=True)
+                            manifest_path = native_dir / "msvc_rtti_classes.json"
+                            manifest_path.write_text(json.dumps({
+                                "class_count": 1,
+                                "vtable_count": 1,
+                                "classes": [
+                                    {
+                                        "name": "Foo",
+                                        "kind": "class",
+                                        "mangled_name": ".?AVFoo@@",
+                                        "type_descriptor_rva": "0x2000",
+                                        "estimated_object_size": 40,
+                                        "layout_strategy": "constructor_first_evidence_order",
+                                        "layout_sources": ["constructor", "method"],
+                                        "base_classes": ["Base"],
+                                        "members": [
+                                            {
+                                                "name": "name_",
+                                                "type": "std::string",
+                                                "estimated_offset": 8,
+                                                "estimated_size": 32,
+                                                "layout_index": 0,
+                                                "layout_confidence": "high",
+                                                "layout_basis": "constructor_first_evidence_order",
+                                                "primary_provenance": {
+                                                    "source_kind": "constructor",
+                                                    "source_function": "Foo",
+                                                    "reason": "std_string_member_usage",
+                                                    "statement": "std::basic_string<char>::basic_string(&this->name_);",
+                                                },
+                                                "layout_provenance": [
+                                                    {
+                                                        "source_kind": "constructor",
+                                                        "source_function": "Foo",
+                                                        "reason": "std_string_member_usage",
+                                                        "statement": "std::basic_string<char>::basic_string(&this->name_);",
+                                                    }
+                                                ],
+                                            }
+                                        ],
+                                        "vtables": [
+                                            {
+                                                "rva": "0x2128",
+                                                "address": "0x140002128",
+                                                "method_count": 1
+                                            }
+                                        ],
+                                        "methods": [
+                                            {
+                                                "name": "vf_140001000",
+                                                "display_name": "__scalar_deleting_destructor",
+                                                "qualified_name": "Foo::__scalar_deleting_destructor",
+                                                "method_kind": "scalar_deleting_destructor",
+                                                "semantic_alias": "~Foo",
+                                                "return_type": "void",
+                                                "params": [{"type": "uint", "name": "flags"}],
+                                                "slot": 0,
+                                                "address": "0x140001000",
+                                                "rva": "0x1000",
+                                                "vtable_rva": "0x2128"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }, indent=2), encoding="utf-8")
+                            report.add_artifact(str(manifest_path), "json", "Ghidra enriched class manifest")
+
+                            ghidra_dir = context.output_dir / "ghidra" / "exports"
+                            ghidra_dir.mkdir(parents=True, exist_ok=True)
+                            ghidra_functions = ghidra_dir / "functions.json"
+                            ghidra_targeted = ghidra_dir / "targeted_decompilation.json"
+                            ghidra_functions.write_text(json.dumps([
+                                {"name": "sub_140001000", "entry_point": "140001000", "signature": "undefined8 sub_140001000(void)"}
+                            ]), encoding="utf-8")
+                            ghidra_targeted.write_text(json.dumps([
+                                {
+                                    "requested_address": "0x140001000",
+                                    "entry_point": "0x140001000",
+                                    "name": "sub_140001000",
+                                    "signature": "undefined8 sub_140001000(void)",
+                                    "return_type": "undefined8",
+                                    "parameters": [
+                                        {"ordinal": 0, "name": "this", "data_type": "Foo *", "storage": "RCX"},
+                                        {"ordinal": 1, "name": "flags", "data_type": "uint", "storage": "RDX"}
+                                    ],
+                                    "caller_count": 1,
+                                    "callers": [
+                                        {"caller_name": "main", "caller_entry_point": "0x140000100", "from_address": "0x140000188", "ref_type": "UNCONDITIONAL_CALL"}
+                                    ],
+                                    "decompile_success": True,
+                                    "decompiled_c": "undefined8 sub_140001000(void) { return 1; }"
+                                }
+                            ]), encoding="utf-8")
+                            report.add_artifact(str(ghidra_functions), "json", "Ghidra function export")
+                            report.add_artifact(str(ghidra_targeted), "json", "Ghidra targeted pseudo-code export")
+
+
+                    def register_analyzers():
+                        return [RTTIPluginAnalyzer()]
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            target = root / "binary.bin"
+            target.write_bytes(b"MZ")
+            engine = ReverseEngineeringEngine(output_root=root / "out", plugin_dirs=[plugin_dir])
+
+            report = engine.analyze(target)
+
+            index_artifact = next(
+                artifact
+                for artifact in report.artifacts
+                if artifact.description == "Unified analysis index"
+            )
+            payload = json.loads(Path(index_artifact.path).read_text(encoding="utf-8"))
+            entities = {
+                f"{entity['kind']}:{entity['key']}": entity
+                for entity in payload["entities"]
+            }
+            relations = {
+                (relation["source"], relation["predicate"], relation["target"])
+                for relation in payload["relations"]
+            }
+
+            class_id = "class:msvc_rtti:foo"
+            base_id = "class:msvc_rtti:base"
+            method_id = "function:msvc_rtti:0x140001000"
+            ghidra_method_id = "function:ghidra:0x140001000"
+            vtable_id = "vtable:msvc_rtti:0x2128"
+            field_id = "field:msvc_rtti:foo::name_"
+
+            self.assertIn(class_id, entities)
+            self.assertIn(base_id, entities)
+            self.assertIn(method_id, entities)
+            self.assertIn(vtable_id, entities)
+            self.assertIn(field_id, entities)
+            self.assertIn((class_id, "inherits_from", base_id), relations)
+            self.assertIn((class_id, "owns_vtable", vtable_id), relations)
+            self.assertIn((class_id, "declares_method_candidate", method_id), relations)
+            self.assertIn((class_id, "declares_field_candidate", field_id), relations)
+            self.assertIn((method_id, "correlates_with", ghidra_method_id), relations)
+            self.assertEqual(entities[method_id]["label"], "Foo::__scalar_deleting_destructor")
+            self.assertEqual(entities[method_id]["attributes"].get("semantic_alias"), "~Foo")
+            self.assertEqual(entities[class_id]["attributes"].get("estimated_object_size"), 40)
+            self.assertEqual(entities[class_id]["attributes"].get("layout_strategy"), "constructor_first_evidence_order")
+            self.assertEqual(entities[field_id]["attributes"].get("estimated_offset"), 8)
+            self.assertEqual(entities[field_id]["attributes"].get("layout_confidence"), "high")
+            self.assertEqual(
+                entities[field_id]["attributes"].get("primary_provenance", {}).get("source_function"),
+                "Foo",
+            )
+            self.assertEqual(
+                entities[ghidra_method_id]["attributes"].get("decompiled_c"),
+                "undefined8 sub_140001000(void) { return 1; }",
+            )
+            self.assertEqual(entities[ghidra_method_id]["attributes"].get("caller_count"), 1)
+            self.assertEqual(entities[ghidra_method_id]["attributes"].get("return_type"), "undefined8")
+
 
 if __name__ == "__main__":
     unittest.main()

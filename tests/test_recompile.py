@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 from tests import _path_setup  # noqa: F401
 
 from re_pro.analysis_diff import create_patch_bundle_from_runs
-from re_pro.recompile import apply_patch_bundle, create_recompile_workspace, run_packaging_action
+from re_pro.psarc import extract_psarc, pack_psarc_from_mapping, parse_psarc
+from re_pro.recompile import apply_patch_bundle, create_recompile_workspace, rebuild_zip_archive_with_overlay, run_packaging_action
 
 
 class RecompileWorkflowTests(unittest.TestCase):
@@ -81,6 +83,30 @@ class RecompileWorkflowTests(unittest.TestCase):
             self.assertIn("apksigner", calls[1][0].lower())
             self.assertTrue(str(result["signed_artifact"]).endswith(".signed.apk"))
 
+    def test_android_rebuild_aab_from_tree_creates_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            metadata = create_recompile_workspace(
+                root,
+                {"target": "app.aab", "target_type": "android-app-bundle", "artifacts": [], "recovered_sources": []},
+                ["Android APK"],
+            )
+            workspace_root = Path(metadata["workspace_root"])
+            source_root = workspace_root / "projects" / "android_studio" / "app" / "src" / "main"
+            (source_root / "AndroidManifest.xml").write_text("<manifest package='repro.bundle' />", encoding="utf-8")
+            assets_dir = source_root / "assets"
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            (assets_dir / "bundle.js").write_text("console.log('bundle');", encoding="utf-8")
+
+            result = run_packaging_action(
+                workspace_root=workspace_root,
+                ecosystem="android-gradle",
+                action="rebuild-aab",
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(str(result["rebuilt_artifact"]).endswith(".aab"))
+
     def test_electron_packaging_action_runs_package_script(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -147,6 +173,28 @@ class RecompileWorkflowTests(unittest.TestCase):
             self.assertIn("asar", calls[0][0].lower())
             self.assertTrue(str(result["rebuilt_artifact"]).endswith("app.asar"))
 
+    def test_electron_asset_staging_copies_tree_into_app_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            metadata = create_recompile_workspace(
+                root,
+                {"target": "app.exe", "target_type": "portable-executable", "artifacts": [], "recovered_sources": []},
+                ["Electron"],
+            )
+            workspace_root = Path(metadata["workspace_root"])
+            incoming_root = workspace_root / "projects" / "electron_app" / "dist" / "incoming" / "src"
+            incoming_root.mkdir(parents=True, exist_ok=True)
+            (incoming_root / "renderer.js").write_text("console.log('renderer');", encoding="utf-8")
+
+            result = run_packaging_action(
+                workspace_root=workspace_root,
+                ecosystem="electron",
+                action="stage-assets",
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue((workspace_root / "projects" / "electron_app" / "resources" / "app" / "src" / "renderer.js").exists())
+
     def test_tauri_sidecar_staging_copies_files_into_template(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -169,6 +217,82 @@ class RecompileWorkflowTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertTrue((workspace_root / "projects" / "tauri_app" / "src-tauri" / "sidecars" / "helper.exe").exists())
+
+    def test_tauri_asset_staging_copies_tree_into_dist(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            metadata = create_recompile_workspace(
+                root,
+                {"target": "app.exe", "target_type": "portable-executable", "artifacts": [], "recovered_sources": []},
+                ["Tauri"],
+            )
+            workspace_root = Path(metadata["workspace_root"])
+            incoming_root = workspace_root / "projects" / "tauri_app" / "dist" / "incoming" / "assets"
+            incoming_root.mkdir(parents=True, exist_ok=True)
+            (incoming_root / "index.js").write_text("console.log('tauri');", encoding="utf-8")
+
+            result = run_packaging_action(
+                workspace_root=workspace_root,
+                ecosystem="tauri",
+                action="stage-assets",
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue((workspace_root / "projects" / "tauri_app" / "dist" / "assets" / "index.js").exists())
+
+    def test_archive_package_action_creates_new_psarc_from_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace_root = root / "workspace"
+            source_root = root / "assets"
+            (source_root / "scripts").mkdir(parents=True)
+            (source_root / "scripts" / "boot.lua").write_text("return true\n", encoding="utf-8")
+            (source_root / "readme.txt").write_text("asset pack\n", encoding="utf-8")
+            output_path = root / "dist" / "assets.psarc"
+
+            result = run_packaging_action(
+                workspace_root=workspace_root,
+                ecosystem="archive",
+                action="create-psarc",
+                target_root=str(source_root),
+                output_path=str(output_path),
+                compression="lzma",
+                compression_level=9,
+                block_size=64,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(output_path.exists())
+            archive = parse_psarc(output_path, inspect_blocks=True)
+            self.assertEqual(archive.compression, "lzma")
+            self.assertEqual(archive.manifest_paths, ["readme.txt", "scripts/boot.lua"])
+            extract_dir = root / "extract"
+            extract_psarc(output_path, extract_dir)
+            self.assertEqual((extract_dir / "scripts" / "boot.lua").read_text(encoding="utf-8"), "return true\n")
+
+    def test_archive_package_action_rebuilds_psarc_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path = root / "base.psarc"
+            pack_psarc_from_mapping({"data/config.txt": b"old\n"}, archive_path, compression="zlib", block_size=64)
+            overlay = root / "overlay"
+            (overlay / "data").mkdir(parents=True)
+            (overlay / "data" / "config.txt").write_text("new\n", encoding="utf-8")
+            output_path = root / "rebuilt.psarc"
+
+            result = run_packaging_action(
+                workspace_root=root / "workspace",
+                ecosystem="archive",
+                action="overlay-rebuild",
+                artifact_path=str(archive_path),
+                target_root=str(overlay),
+                output_path=str(output_path),
+            )
+
+            self.assertTrue(result["ok"])
+            extract_dir = root / "extract"
+            extract_psarc(output_path, extract_dir)
+            self.assertEqual((extract_dir / "data" / "config.txt").read_text(encoding="utf-8"), "new\n")
 
     def test_patch_bundle_can_be_created_from_diff_and_applied(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -211,6 +335,29 @@ class RecompileWorkflowTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertTrue((target_root / "src" / "feature.ts").exists())
             self.assertTrue((target_root / "artifacts" / "manifest.json").exists())
+
+    def test_archive_overlay_rebuild_replaces_and_adds_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            base_archive = root / "base.apk"
+            overlay_root = root / "overlay"
+            overlay_root.mkdir()
+            with zipfile.ZipFile(base_archive, "w") as archive:
+                archive.writestr("AndroidManifest.xml", "<manifest package='base' />")
+                archive.writestr("assets/app.js", "console.log('base');")
+            (overlay_root / "AndroidManifest.xml").write_text("<manifest package='patched' />", encoding="utf-8")
+            assets_dir = overlay_root / "assets"
+            assets_dir.mkdir()
+            (assets_dir / "new.js").write_text("console.log('new');", encoding="utf-8")
+
+            result = rebuild_zip_archive_with_overlay(base_archive, overlay_root)
+
+            self.assertTrue(result["ok"])
+            rebuilt = Path(result["rebuilt_artifact"])
+            self.assertTrue(rebuilt.exists())
+            with zipfile.ZipFile(rebuilt, "r") as archive:
+                self.assertEqual(archive.read("AndroidManifest.xml").decode("utf-8"), "<manifest package='patched' />")
+                self.assertEqual(archive.read("assets/new.js").decode("utf-8"), "console.log('new');")
 
 
 if __name__ == "__main__":

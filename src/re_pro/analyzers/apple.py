@@ -5,6 +5,7 @@ import plistlib
 import zipfile
 from pathlib import Path
 
+from ..asar_tools import extract_asar_archive
 from ..sourcemap import restore_sources_from_map
 from ..tooling import resolve_command, run_command
 from ..utils import ensure_dir, extract_ascii_strings, parse_macho_metadata, parse_plist
@@ -420,19 +421,10 @@ class AppleAnalyzer(Analyzer):
 
     @staticmethod
     def _extract_asar(asar_path: Path, context) -> Path | None:
-        destination = ensure_dir(context.output_dir / "macos_extracted_asar")
-        command = resolve_command(
-            [
-                ["asar", "extract", str(asar_path), str(destination)],
-                ["npx", "-y", "@electron/asar", "extract", str(asar_path), str(destination)],
-            ]
-        )
-        if command is None:
-            return None
-        code, _, stderr = run_command(command, cwd=asar_path.parent, timeout=300)
-        if code == 0:
+        destination, error = extract_asar_archive(asar_path, context.output_dir / "macos_extracted_asar", cwd=asar_path.parent)
+        if destination is not None:
             return destination
-        context.log(f"asar extraction failed: {stderr.strip()}")
+        context.log(f"asar extraction failed: {error}")
         return None
 
     @staticmethod

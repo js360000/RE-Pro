@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,9 @@ from tests import _path_setup  # noqa: F401
 from re_pro.elf import parse_elf_metadata, parse_elf_needed_libraries, parse_elf_program_headers, parse_elf_sections, parse_elf_symbols
 from re_pro.analyzers.native import NativeLanguageAnalyzer
 from re_pro.engine import AnalysisContext
+from re_pro.msvc_rtti import _build_class_entries
 from re_pro.models import AnalysisReport
+from re_pro.utils import parse_pe_metadata, parse_pe_sections
 
 
 class NativeAnalyzerTests(unittest.TestCase):
@@ -101,6 +104,76 @@ class NativeAnalyzerTests(unittest.TestCase):
             self.assertTrue(
                 any(artifact.description.startswith("Native symbol listing produced by llvm-nm") for artifact in report.artifacts)
             )
+
+    def test_msvc_rtti_recovery_emits_class_manifest_and_pseudo_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "sample.exe"
+            target.write_bytes(self._build_minimal_pe64_with_msvc_rtti())
+            metadata = parse_pe_metadata(target)
+            sections = parse_pe_sections(target)
+            report = AnalysisReport(target=str(target), output_dir=str(root / "out"))
+            context = AnalysisContext(
+                target=target,
+                output_dir=root / "out",
+                ascii_strings=[],
+                probable_binary=True,
+                pe_metadata=metadata,
+                pe_sections=sections,
+                pe_imports=["user32.dll"],
+            )
+
+            with (
+                patch("re_pro.analyzers.native.resolve_command", return_value=None),
+                patch("re_pro.analyzers.native.run_command", return_value=(1, "", "missing")),
+            ):
+                NativeLanguageAnalyzer().analyze(context, report)
+
+            self.assertIn("MSVC RTTI", report.frameworks)
+            self.assertIn("Native C/C++ application", report.frameworks)
+            manifest_artifact = next(
+                artifact for artifact in report.artifacts if artifact.description == "MSVC RTTI class manifest"
+            )
+            manifest = json.loads(Path(manifest_artifact.path).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["class_count"], 2)
+            foo_entry = next(entry for entry in manifest["classes"] if entry["name"] == "Foo")
+            self.assertIn("Base", foo_entry["base_classes"])
+            self.assertEqual(len(foo_entry["methods"]), 2)
+            self.assertTrue(any(source.original_path == "msvc_rtti::Foo.hpp" for source in report.recovered_sources))
+            self.assertTrue(any(source.original_path == "msvc_rtti::Foo.cpp" for source in report.recovered_sources))
+
+    def test_build_class_entries_preserves_repeated_slots_for_shared_purecall(self) -> None:
+        classes = _build_class_entries(
+            {
+                0x2000: {
+                    "rva": "0x2000",
+                    "mangled_name": ".?AVIFoo@@",
+                    "demangled_name": "IFoo",
+                    "kind": "class",
+                }
+            },
+            [],
+            [
+                {
+                    "class_name": "IFoo",
+                    "mangled_name": ".?AVIFoo@@",
+                    "complete_object_locator_rva": "0x2100",
+                    "address": "0x140002100",
+                    "rva": "0x2100",
+                    "method_count": 3,
+                    "methods": [
+                        {"slot": 0, "address": "0x140001000", "rva": "0x1000"},
+                        {"slot": 1, "address": "0x140006410", "rva": "0x6410"},
+                        {"slot": 2, "address": "0x140006410", "rva": "0x6410"},
+                    ],
+                }
+            ],
+            "x64",
+        )
+
+        self.assertEqual(len(classes), 1)
+        self.assertEqual(len(classes[0]["methods"]), 3)
+        self.assertEqual([method["slot"] for method in classes[0]["methods"]], [0, 1, 2])
 
     def test_elf_markers_and_capstone_preview_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -298,6 +371,114 @@ class NativeAnalyzerTests(unittest.TestCase):
         struct.pack_into("<HHIIIIIHHHHHH", data, 16, 2, 0x08, 1, 0x00100000, 52, 0, 0x20920000, 52, 32, 1, 0, 0, 0)
         struct.pack_into("<IIIIIIII", data, 52, 1, 0x100, 0x00100000, 0x00100000, 0x40, 0x40, 0x5, 16)
         data[0x100 : 0x108] = b"\x3c\x08\x12\x34\x03\xe0\x00\x08"
+        return bytes(data)
+
+    @staticmethod
+    def _build_minimal_pe64_with_msvc_rtti() -> bytes:
+        image_base = 0x140000000
+        text_rva = 0x1000
+        rdata_rva = 0x2000
+        text_raw = 0x200
+        rdata_raw = 0x400
+        data = bytearray(0x800)
+        data[0:2] = b"MZ"
+        struct.pack_into("<I", data, 0x3C, 0x80)
+        data[0x80:0x84] = b"PE\x00\x00"
+        struct.pack_into("<HHIIIHH", data, 0x84, 0x8664, 2, 123456789, 0, 0, 0xF0, 0x22)
+        optional_header_offset = 0x80 + 24
+        struct.pack_into("<H", data, optional_header_offset, 0x20B)
+        struct.pack_into("<I", data, optional_header_offset + 16, text_rva)
+        struct.pack_into("<Q", data, optional_header_offset + 24, image_base)
+
+        section_table_offset = optional_header_offset + 0xF0
+        data[section_table_offset : section_table_offset + 8] = b".text\x00\x00\x00"
+        struct.pack_into("<IIII", data, section_table_offset + 8, 0x200, text_rva, 0x200, text_raw)
+        struct.pack_into("<I", data, section_table_offset + 36, 0x60000020)
+        data[section_table_offset + 40 : section_table_offset + 48] = b".rdata\x00"
+        struct.pack_into("<IIII", data, section_table_offset + 48, 0x200, rdata_rva, 0x200, rdata_raw)
+        struct.pack_into("<I", data, section_table_offset + 76, 0x40000040)
+
+        data[text_raw : text_raw + 4] = b"\x48\x31\xc0\xc3"
+        data[text_raw + 0x10 : text_raw + 0x14] = b"\x48\xff\xc0\xc3"
+
+        def rdata_offset(local_offset: int) -> int:
+            return rdata_raw + local_offset
+
+        def rdata_local_rva(local_offset: int) -> int:
+            return rdata_rva + local_offset
+
+        foo_type_descriptor = 0x00
+        base_type_descriptor = 0x20
+        foo_class_hierarchy = 0x80
+        foo_base_array = 0x90
+        foo_base_descriptor = 0xA0
+        base_base_descriptor = 0xBC
+        foo_complete_object_locator = 0x100
+        foo_vtable_pointer = 0x120
+
+        data[rdata_offset(foo_type_descriptor + 16) : rdata_offset(foo_type_descriptor + 16) + 10] = b".?AVFoo@@\x00"
+        data[rdata_offset(base_type_descriptor + 16) : rdata_offset(base_type_descriptor + 16) + 11] = b".?AVBase@@\x00"
+
+        struct.pack_into(
+            "<IIII",
+            data,
+            rdata_offset(foo_class_hierarchy),
+            0,
+            0,
+            2,
+            rdata_local_rva(foo_base_array),
+        )
+        struct.pack_into(
+            "<II",
+            data,
+            rdata_offset(foo_base_array),
+            rdata_local_rva(foo_base_descriptor),
+            rdata_local_rva(base_base_descriptor),
+        )
+        struct.pack_into(
+            "<IIiiiII",
+            data,
+            rdata_offset(foo_base_descriptor),
+            rdata_local_rva(foo_type_descriptor),
+            2,
+            0,
+            0,
+            0,
+            0,
+            rdata_local_rva(foo_class_hierarchy),
+        )
+        struct.pack_into(
+            "<IIiiiII",
+            data,
+            rdata_offset(base_base_descriptor),
+            rdata_local_rva(base_type_descriptor),
+            1,
+            0,
+            0,
+            0,
+            0,
+            rdata_local_rva(foo_class_hierarchy),
+        )
+        struct.pack_into(
+            "<IIIIII",
+            data,
+            rdata_offset(foo_complete_object_locator),
+            1,
+            0,
+            0,
+            rdata_local_rva(foo_type_descriptor),
+            rdata_local_rva(foo_class_hierarchy),
+            rdata_local_rva(foo_complete_object_locator),
+        )
+        struct.pack_into(
+            "<Q",
+            data,
+            rdata_offset(foo_vtable_pointer),
+            image_base + rdata_local_rva(foo_complete_object_locator),
+        )
+        struct.pack_into("<Q", data, rdata_offset(foo_vtable_pointer + 8), image_base + text_rva)
+        struct.pack_into("<Q", data, rdata_offset(foo_vtable_pointer + 16), image_base + text_rva + 0x10)
+        struct.pack_into("<Q", data, rdata_offset(foo_vtable_pointer + 24), 0)
         return bytes(data)
 
 

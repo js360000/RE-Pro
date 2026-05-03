@@ -10,7 +10,10 @@ from typing import Callable
 from .analysis_index import AnalysisIndex
 from .index_ingest import ingest_structured_artifacts
 from .models import AnalysisReport
+from .models import FrontendSettings
+from .models import LiveProcessSettings
 from .models import LlmAssistSettings
+from .models import PortingSettings
 from .models import RuntimeTraceSettings
 from .plugins import build_analyzers, resolve_plugin_dirs
 from .reporting import write_json_report, write_markdown_report
@@ -61,7 +64,10 @@ class AnalysisContext:
     run_external_tools: bool = False
     run_ghidra: bool = False
     llm_settings: LlmAssistSettings = field(default_factory=LlmAssistSettings)
+    porting_settings: PortingSettings = field(default_factory=PortingSettings)
     runtime_trace_settings: RuntimeTraceSettings = field(default_factory=RuntimeTraceSettings)
+    live_process_settings: LiveProcessSettings = field(default_factory=LiveProcessSettings)
+    frontend_settings: FrontendSettings = field(default_factory=FrontendSettings)
 
     def log(self, message: str) -> None:
         if self.logger:
@@ -77,7 +83,10 @@ class ReverseEngineeringEngine:
         run_external_tools: bool = False,
         run_ghidra: bool = False,
         llm_settings: LlmAssistSettings | None = None,
+        porting_settings: PortingSettings | None = None,
         runtime_trace_settings: RuntimeTraceSettings | None = None,
+        live_process_settings: LiveProcessSettings | None = None,
+        frontend_settings: FrontendSettings | None = None,
         plugin_dirs: list[str | Path] | None = None,
     ) -> None:
         self.output_root = Path(output_root).resolve() if output_root else (Path.cwd() / "analysis_output").resolve()
@@ -85,7 +94,10 @@ class ReverseEngineeringEngine:
         self.run_external_tools = run_external_tools
         self.run_ghidra = run_ghidra
         self.llm_settings = llm_settings or LlmAssistSettings()
+        self.porting_settings = porting_settings or PortingSettings()
         self.runtime_trace_settings = runtime_trace_settings or RuntimeTraceSettings()
+        self.live_process_settings = live_process_settings or LiveProcessSettings()
+        self.frontend_settings = frontend_settings or FrontendSettings()
         self.plugin_dirs = resolve_plugin_dirs(plugin_dirs)
         self.analyzers = build_analyzers(plugin_dirs=self.plugin_dirs, logger=self.logger)
 
@@ -102,7 +114,10 @@ class ReverseEngineeringEngine:
             run_external_tools=self.run_external_tools,
             run_ghidra=self.run_ghidra,
             llm_settings=self.llm_settings,
+            porting_settings=self.porting_settings,
             runtime_trace_settings=self.runtime_trace_settings,
+            live_process_settings=self.live_process_settings,
+            frontend_settings=self.frontend_settings,
         )
         report = AnalysisReport(target=str(target_path), output_dir=str(output_dir))
 

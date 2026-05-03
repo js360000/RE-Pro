@@ -4,12 +4,13 @@ import json
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import QThread, Qt, QUrl, pyqtSignal
+from PyQt5.QtCore import QThread, QTimer, Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -38,8 +39,24 @@ from PyQt5.QtWidgets import (
 from .engine import ReverseEngineeringEngine
 from .dependency_installer import DependencyInstaller
 from .index_workflows import build_entity_workflow
+from .live_process import resolve_live_process
+from .mcp_launch import build_mcp_launch_details
+from .mcp_launch import start_mcp_server_process
+from .mcp_launch import stop_mcp_server_process
+from .models import LiveProcessSettings
 from .models import LlmAssistSettings
+from .models import FrontendSettings
+from .models import PortingSettings
 from .models import RuntimeTraceSettings
+from .profiles import analysis_settings_from_profile
+from .profiles import build_analysis_profile
+from .profiles import list_profiles
+from .profiles import load_profile
+from .profiles import save_profile
+from .workspace_browser import build_browser_workspace
+from .workspace_browser import patch_browser_node_bytes
+from .workspace_browser import read_browser_node
+from .workspace_browser import write_browser_node
 
 
 class AnalysisWorker(QThread):
@@ -54,7 +71,10 @@ class AnalysisWorker(QThread):
         run_external_tools: bool,
         run_ghidra: bool,
         llm_settings: LlmAssistSettings,
+        porting_settings: PortingSettings,
         runtime_trace_settings: RuntimeTraceSettings,
+        live_process_settings: LiveProcessSettings,
+        frontend_settings: FrontendSettings,
     ) -> None:
         super().__init__()
         self.target = target
@@ -62,7 +82,10 @@ class AnalysisWorker(QThread):
         self.run_external_tools = run_external_tools
         self.run_ghidra = run_ghidra
         self.llm_settings = llm_settings
+        self.porting_settings = porting_settings
         self.runtime_trace_settings = runtime_trace_settings
+        self.live_process_settings = live_process_settings
+        self.frontend_settings = frontend_settings
 
     def run(self) -> None:
         try:
@@ -72,7 +95,10 @@ class AnalysisWorker(QThread):
                 run_external_tools=self.run_external_tools,
                 run_ghidra=self.run_ghidra,
                 llm_settings=self.llm_settings,
+                porting_settings=self.porting_settings,
                 runtime_trace_settings=self.runtime_trace_settings,
+                live_process_settings=self.live_process_settings,
+                frontend_settings=self.frontend_settings,
             )
             report = engine.analyze(self.target)
             self.completed.emit(report.to_dict())
@@ -98,6 +124,131 @@ class ToolInstallWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class BackgroundLogWindow(QDialog):
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(920, 620)
+        self._log_path: Path | None = None
+        self._status_path: Path | None = None
+
+        layout = QVBoxLayout(self)
+        self.path_label = QLabel("No background job selected.")
+        self.path_label.setWordWrap(True)
+        layout.addWidget(self.path_label)
+
+        self.status_text = QPlainTextEdit()
+        self.status_text.setReadOnly(True)
+        self.status_text.setMaximumHeight(160)
+        layout.addWidget(self.status_text)
+
+        self.log_text = QPlainTextEdit()
+        self.log_text.setReadOnly(True)
+        layout.addWidget(self.log_text)
+
+        button_row = QHBoxLayout()
+        self.refresh_button = QPushButton("Refresh")
+        self.open_log_button = QPushButton("Open Log")
+        self.open_status_button = QPushButton("Open Status")
+        button_row.addWidget(self.refresh_button)
+        button_row.addWidget(self.open_log_button)
+        button_row.addWidget(self.open_status_button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        self.refresh_button.clicked.connect(self.refresh_contents)
+        self.open_log_button.clicked.connect(self._open_log_path)
+        self.open_status_button.clicked.connect(self._open_status_path)
+
+        self.timer = QTimer(self)
+        self.timer.setInterval(1500)
+        self.timer.timeout.connect(self.refresh_contents)
+        self.timer.start()
+
+    def set_job_paths(self, log_path: str | None, status_path: str | None) -> None:
+        self._log_path = Path(log_path) if log_path else None
+        self._status_path = Path(status_path) if status_path else None
+        self.open_log_button.setEnabled(bool(self._log_path))
+        self.open_status_button.setEnabled(bool(self._status_path))
+        self.path_label.setText(
+            "\n".join(
+                [
+                    f"Log: {self._log_path}" if self._log_path else "Log: unavailable",
+                    f"Status: {self._status_path}" if self._status_path else "Status: unavailable",
+                    "Showing the tail of the live log so large background jobs do not freeze the UI.",
+                ]
+            )
+        )
+        self.refresh_contents()
+
+    def refresh_contents(self) -> None:
+        self.status_text.setPlainText(self._format_status_text())
+        self.log_text.setPlainText(self._tail_text(self._log_path))
+        self.log_text.moveCursor(self.log_text.textCursor().End)
+
+    def _format_status_text(self) -> str:
+        if self._status_path is None:
+            return "No status file configured."
+        payload = self._read_json(self._status_path)
+        if payload is None:
+            return f"Waiting for status file:\n{self._status_path}"
+        lines = [
+            f"State: {payload.get('state', 'unknown')}",
+            f"Target: {payload.get('target', '')}",
+            f"Started: {payload.get('started_at', '')}",
+            f"Finished: {payload.get('finished_at', '')}",
+        ]
+        if payload.get("exit_code") is not None:
+            lines.append(f"Exit Code: {payload.get('exit_code')}")
+        if payload.get("analysis_timed_out"):
+            lines.append("Analysis Timed Out: yes")
+        warning_counts = payload.get("warning_counts") or {}
+        if isinstance(warning_counts, dict) and warning_counts:
+            summary = ", ".join(f"{key}={value}" for key, value in sorted(warning_counts.items()))
+            lines.append(f"Warnings: {summary}")
+        message = str(payload.get("message", "")).strip()
+        if message:
+            lines.extend(["", message])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _tail_text(path: Path | None, *, max_bytes: int = 240_000) -> str:
+        if path is None:
+            return "No log file configured."
+        if not path.exists():
+            return f"Waiting for log file:\n{path}"
+        try:
+            size = path.stat().st_size
+            with path.open("rb") as handle:
+                if size > max_bytes:
+                    handle.seek(-max_bytes, 2)
+                    prefix = f"... showing last {max_bytes} bytes of {size} ...\n"
+                else:
+                    prefix = ""
+                text = handle.read().decode("utf-8", errors="ignore")
+        except OSError as exc:
+            return f"Could not read log file:\n{path}\n\n{exc}"
+        return prefix + text
+
+    @staticmethod
+    def _read_json(path: Path) -> dict | None:
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _open_log_path(self) -> None:
+        if self._log_path is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._log_path)))
+
+    def _open_status_path(self) -> None:
+        if self._status_path is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._status_path)))
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -106,9 +257,18 @@ class MainWindow(QMainWindow):
         self.worker: AnalysisWorker | None = None
         self.tool_worker: ToolInstallWorker | None = None
         self._history: list[dict] = []
+        self._profile_entries: list[dict] = []
+        self._current_profile: dict | None = None
         self._current_report: dict | None = None
         self._current_index_payload: dict | None = None
         self._current_index_workflow: dict | None = None
+        self._ghidra_job_paths: dict[str, str] = {}
+        self._pe_job_paths: dict[str, str] = {}
+        self._mcp_details: dict | None = None
+        self._browser_manifest: dict | None = None
+        self._current_browser_node_id: str = ""
+        self.ghidra_log_window: BackgroundLogWindow | None = None
+        self.pe_log_window: BackgroundLogWindow | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -132,22 +292,42 @@ class MainWindow(QMainWindow):
         output_row.addWidget(self.output_input)
         output_row.addWidget(browse_output)
 
+        profile_row = QHBoxLayout()
+        self.profile_name_input = QLineEdit()
+        self.profile_name_input.setPlaceholderText("Optional profile name")
+        self.save_profile_button = QPushButton("Save Profile")
+        self.load_profile_button = QPushButton("Load Selected Profile")
+        self.refresh_profiles_button = QPushButton("Refresh Profiles")
+        profile_row.addWidget(self.profile_name_input)
+        profile_row.addWidget(self.save_profile_button)
+        profile_row.addWidget(self.load_profile_button)
+        profile_row.addWidget(self.refresh_profiles_button)
+
         action_row = QHBoxLayout()
         self.analyze_button = QPushButton("Run Analysis")
         self.install_tools_button = QPushButton("Install Tooling")
         self.external_tools_checkbox = QCheckBox("Run RE Tools")
         self.ghidra_checkbox = QCheckBox("Run Ghidra")
+        self.frontend_beautify_checkbox = QCheckBox("Beautify JS/CSS")
+        self.open_ghidra_log_button = QPushButton("Ghidra Log")
+        self.open_pe_log_button = QPushButton("PE Log")
+        self.open_ghidra_log_button.setEnabled(False)
+        self.open_pe_log_button.setEnabled(False)
         self.tools_input = QLineEdit(str((Path.cwd() / "tools").resolve()))
         action_row.addWidget(self.analyze_button)
         action_row.addWidget(self.install_tools_button)
         action_row.addWidget(self.external_tools_checkbox)
         action_row.addWidget(self.ghidra_checkbox)
+        action_row.addWidget(self.frontend_beautify_checkbox)
+        action_row.addWidget(self.open_ghidra_log_button)
+        action_row.addWidget(self.open_pe_log_button)
         controls_layout.addRow("Target", target_row)
         controls_layout.addRow("Output Root", output_row)
+        controls_layout.addRow("Profiles", profile_row)
         controls_layout.addRow("Tools Root", self.tools_input)
 
         llm_options = QHBoxLayout()
-        self.llm_checkbox = QCheckBox("Run GPT-5.4")
+        self.llm_checkbox = QCheckBox("Run LLM")
         self.llm_auto_checkbox = QCheckBox("Auto-trigger")
         self.llm_background_checkbox = QCheckBox("Background job")
         self.llm_background_checkbox.setChecked(True)
@@ -175,8 +355,55 @@ class MainWindow(QMainWindow):
         runtime_options.addStretch(1)
         controls_layout.addRow("Runtime", runtime_options)
 
+        live_options = QHBoxLayout()
+        self.live_process_checkbox = QCheckBox("Live Attach")
+        self.live_pid_input = QLineEdit()
+        self.live_pid_input.setPlaceholderText("PID")
+        self.live_pid_input.setMaximumWidth(90)
+        self.live_name_input = QLineEdit()
+        self.live_name_input.setPlaceholderText("Process name, e.g. pcsx2-qt.exe")
+        self.live_memory_checkbox = QCheckBox("Dump memory")
+        self.live_memory_checkbox.setChecked(True)
+        self.live_max_total_input = QLineEdit("256")
+        self.live_max_total_input.setMaximumWidth(70)
+        live_options.addWidget(self.live_process_checkbox)
+        live_options.addWidget(QLabel("PID"))
+        live_options.addWidget(self.live_pid_input)
+        live_options.addWidget(QLabel("Name"))
+        live_options.addWidget(self.live_name_input)
+        live_options.addWidget(self.live_memory_checkbox)
+        live_options.addWidget(QLabel("Max MiB"))
+        live_options.addWidget(self.live_max_total_input)
+        live_options.addStretch(1)
+        controls_layout.addRow("Live Process", live_options)
+
+        porting_options = QHBoxLayout()
+        self.porting_enabled_checkbox = QCheckBox("Architecture port")
+        self.porting_source_arch_input = QLineEdit()
+        self.porting_source_arch_input.setPlaceholderText("auto/x86_64")
+        self.porting_source_arch_input.setMaximumWidth(120)
+        self.porting_target_arch_combo = QComboBox()
+        self.porting_target_arch_combo.setEditable(True)
+        self.porting_target_arch_combo.addItems(["", "arm64", "x86_64", "x86", "armv7", "riscv64"])
+        self.porting_mode_combo = QComboBox()
+        self.porting_mode_combo.addItems(["heuristic", "hybrid", "llm"])
+        porting_options.addWidget(self.porting_enabled_checkbox)
+        porting_options.addWidget(QLabel("Source"))
+        porting_options.addWidget(self.porting_source_arch_input)
+        porting_options.addWidget(QLabel("Target"))
+        porting_options.addWidget(self.porting_target_arch_combo)
+        porting_options.addWidget(QLabel("Mode"))
+        porting_options.addWidget(self.porting_mode_combo)
+        porting_options.addStretch(1)
+        controls_layout.addRow("Porting", porting_options)
+
         llm_params = QHBoxLayout()
         self.llm_model_input = QLineEdit("gpt-5.4")
+        self.llm_model_input.setPlaceholderText("gpt-5.5, gpt-5.4, gpt-5.4-mini, ...")
+        self.llm_auth_combo = QComboBox()
+        self.llm_auth_combo.addItems(["auto", "api-key", "codex-oauth"])
+        self.codex_auth_input = QLineEdit()
+        self.codex_auth_input.setPlaceholderText("Optional .codex/auth.json path")
         self.llm_reasoning_combo = QComboBox()
         self.llm_reasoning_combo.addItems(["none", "low", "medium", "high", "xhigh"])
         self.llm_reasoning_combo.setCurrentText("high")
@@ -186,6 +413,8 @@ class MainWindow(QMainWindow):
         self.llm_max_output_input = QLineEdit("12000")
         llm_params.addWidget(QLabel("Model"))
         llm_params.addWidget(self.llm_model_input)
+        llm_params.addWidget(QLabel("Auth"))
+        llm_params.addWidget(self.llm_auth_combo)
         llm_params.addWidget(QLabel("Reasoning"))
         llm_params.addWidget(self.llm_reasoning_combo)
         llm_params.addWidget(QLabel("Verbosity"))
@@ -193,6 +422,7 @@ class MainWindow(QMainWindow):
         llm_params.addWidget(QLabel("Max Output"))
         llm_params.addWidget(self.llm_max_output_input)
         controls_layout.addRow("LLM Params", llm_params)
+        controls_layout.addRow("Codex Auth", self.codex_auth_input)
 
         self.llm_task_input = QPlainTextEdit()
         self.llm_task_input.setMaximumHeight(90)
@@ -248,11 +478,52 @@ class MainWindow(QMainWindow):
         artifacts_splitter.addWidget(self.artifacts_list)
         artifacts_splitter.addWidget(preview_panel)
         artifacts_splitter.setSizes([420, 720])
+        self.artifacts_tab_widget = artifacts_splitter
 
         self.sources_tree = QTreeWidget()
         self.sources_tree.setHeaderLabels(["Recovered Source", "Restored Path"])
         self.sources_tree.itemDoubleClicked.connect(self._open_tree_item_path)
         self.sources_tree.currentItemChanged.connect(self._preview_source)
+        self.sources_tab_widget = self.sources_tree
+
+        browser_panel = QWidget()
+        browser_layout = QVBoxLayout(browser_panel)
+        browser_actions = QHBoxLayout()
+        self.browser_refresh_button = QPushButton("Refresh Browser")
+        self.browser_open_button = QPushButton("Open Node")
+        self.browser_save_button = QPushButton("Save Editor")
+        self.browser_mode_combo = QComboBox()
+        self.browser_mode_combo.addItems(["auto", "text", "json", "hex", "base64"])
+        self.browser_offset_input = QLineEdit("0")
+        self.browser_offset_input.setMaximumWidth(90)
+        self.browser_patch_bytes_input = QLineEdit()
+        self.browser_patch_bytes_input.setPlaceholderText("Hex patch bytes, e.g. 90 90")
+        self.browser_patch_button = QPushButton("Apply Hex Patch")
+        browser_actions.addWidget(self.browser_refresh_button)
+        browser_actions.addWidget(self.browser_open_button)
+        browser_actions.addWidget(QLabel("View"))
+        browser_actions.addWidget(self.browser_mode_combo)
+        browser_actions.addWidget(self.browser_save_button)
+        browser_actions.addWidget(QLabel("Offset"))
+        browser_actions.addWidget(self.browser_offset_input)
+        browser_actions.addWidget(self.browser_patch_bytes_input)
+        browser_actions.addWidget(self.browser_patch_button)
+        browser_actions.addStretch(1)
+        self.browser_status_label = QLabel("Run an analysis or load a report to browse editable internals.")
+        self.browser_status_label.setWordWrap(True)
+        self.browser_tree = QTreeWidget()
+        self.browser_tree.setHeaderLabels(["Name", "Mode", "Origin", "Size"])
+        self.browser_tree.currentItemChanged.connect(self._preview_browser_node)
+        self.browser_tree.itemDoubleClicked.connect(self._open_browser_item_path)
+        self.browser_editor = QPlainTextEdit()
+        browser_splitter = QSplitter(Qt.Horizontal)
+        browser_splitter.addWidget(self.browser_tree)
+        browser_splitter.addWidget(self.browser_editor)
+        browser_splitter.setSizes([420, 760])
+        browser_layout.addLayout(browser_actions)
+        browser_layout.addWidget(self.browser_status_label)
+        browser_layout.addWidget(browser_splitter)
+        self.browser_tab_widget = browser_panel
 
         index_panel = QWidget()
         index_layout = QVBoxLayout(index_panel)
@@ -319,6 +590,70 @@ class MainWindow(QMainWindow):
         self.history_list = QListWidget()
         self.history_list.currentRowChanged.connect(self._show_history_report)
 
+        profiles_panel = QWidget()
+        profiles_layout = QVBoxLayout(profiles_panel)
+        profiles_search_row = QHBoxLayout()
+        self.profile_search_input = QLineEdit()
+        self.profile_search_input.setPlaceholderText("Search saved analysis/recompile profiles")
+        self.profile_kind_combo = QComboBox()
+        self.profile_kind_combo.addItems(["All", "analysis", "package_action"])
+        profiles_search_row.addWidget(QLabel("Search"))
+        profiles_search_row.addWidget(self.profile_search_input)
+        profiles_search_row.addWidget(QLabel("Kind"))
+        profiles_search_row.addWidget(self.profile_kind_combo)
+        self.profiles_list = QListWidget()
+        self.profiles_list.currentItemChanged.connect(self._show_selected_profile)
+        self.profiles_list.itemDoubleClicked.connect(self._load_selected_profile)
+        self.profile_detail_text = QPlainTextEdit()
+        self.profile_detail_text.setReadOnly(True)
+        profile_button_row = QHBoxLayout()
+        self.profile_open_output_button = QPushButton("Open Output")
+        self.profile_load_report_button = QPushButton("Load Report")
+        profile_button_row.addWidget(self.profile_open_output_button)
+        profile_button_row.addWidget(self.profile_load_report_button)
+        profiles_layout.addLayout(profiles_search_row)
+        profiles_layout.addWidget(self.profiles_list)
+        profiles_layout.addWidget(self.profile_detail_text)
+        profiles_layout.addLayout(profile_button_row)
+
+        mcp_panel = QWidget()
+        mcp_layout = QVBoxLayout(mcp_panel)
+        mcp_form = QFormLayout()
+        mcp_transport_row = QHBoxLayout()
+        self.mcp_transport_combo = QComboBox()
+        self.mcp_transport_combo.addItems(["streamable-http", "sse", "stdio"])
+        self.mcp_host_input = QLineEdit("127.0.0.1")
+        self.mcp_port_input = QLineEdit("8000")
+        self.mcp_port_input.setMaximumWidth(90)
+        mcp_transport_row.addWidget(QLabel("Transport"))
+        mcp_transport_row.addWidget(self.mcp_transport_combo)
+        mcp_transport_row.addWidget(QLabel("Host"))
+        mcp_transport_row.addWidget(self.mcp_host_input)
+        mcp_transport_row.addWidget(QLabel("Port"))
+        mcp_transport_row.addWidget(self.mcp_port_input)
+        mcp_transport_row.addStretch(1)
+        mcp_form.addRow("Connection", mcp_transport_row)
+        self.mcp_status_label = QLabel("MCP server is not running.")
+        self.mcp_status_label.setWordWrap(True)
+        mcp_form.addRow("Status", self.mcp_status_label)
+        mcp_layout.addLayout(mcp_form)
+        mcp_button_row = QHBoxLayout()
+        self.mcp_start_button = QPushButton("Start MCP Server")
+        self.mcp_stop_button = QPushButton("Stop MCP Server")
+        self.mcp_refresh_button = QPushButton("Refresh JSON")
+        self.mcp_open_log_button = QPushButton("Open MCP Log")
+        self.mcp_stop_button.setEnabled(False)
+        self.mcp_open_log_button.setEnabled(False)
+        mcp_button_row.addWidget(self.mcp_start_button)
+        mcp_button_row.addWidget(self.mcp_stop_button)
+        mcp_button_row.addWidget(self.mcp_refresh_button)
+        mcp_button_row.addWidget(self.mcp_open_log_button)
+        mcp_button_row.addStretch(1)
+        mcp_layout.addLayout(mcp_button_row)
+        self.mcp_config_text = QPlainTextEdit()
+        self.mcp_config_text.setReadOnly(True)
+        mcp_layout.addWidget(self.mcp_config_text)
+
         self.tabs.addTab(self.summary_text, "Summary")
         self.tabs.addTab(self.runtime_text, "Runtime")
         self.tabs.addTab(self.porting_text, "Porting")
@@ -327,9 +662,12 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.findings_table, "Findings")
         self.tabs.addTab(artifacts_splitter, "Artifacts")
         self.tabs.addTab(self.sources_tree, "Recovered Sources")
+        self.tabs.addTab(browser_panel, "File Browser")
         self.tabs.addTab(index_panel, "Analysis Index")
         self.tabs.addTab(self.json_text, "JSON")
+        self.tabs.addTab(profiles_panel, "Profiles")
         self.tabs.addTab(self.history_list, "History")
+        self.tabs.addTab(mcp_panel, "MCP Server")
         splitter.addWidget(self.tabs)
         splitter.addWidget(self.log_text)
         splitter.setSizes([650, 180])
@@ -343,6 +681,15 @@ class MainWindow(QMainWindow):
         browse_output.clicked.connect(self._browse_output)
         self.analyze_button.clicked.connect(self._start_analysis)
         self.install_tools_button.clicked.connect(self._install_tooling)
+        self.open_ghidra_log_button.clicked.connect(self._open_ghidra_log_window)
+        self.open_pe_log_button.clicked.connect(self._open_pe_log_window)
+        self.save_profile_button.clicked.connect(self._save_profile_from_form)
+        self.load_profile_button.clicked.connect(self._load_selected_profile)
+        self.refresh_profiles_button.clicked.connect(self._refresh_profiles)
+        self.profile_search_input.textChanged.connect(self._refresh_profiles)
+        self.profile_kind_combo.currentTextChanged.connect(self._refresh_profiles)
+        self.profile_open_output_button.clicked.connect(self._open_selected_profile_output)
+        self.profile_load_report_button.clicked.connect(self._load_selected_profile_report)
         self.index_search_input.textChanged.connect(self._refresh_index_table)
         self.index_kind_combo.currentTextChanged.connect(self._refresh_index_table)
         self.index_open_button.clicked.connect(self._open_selected_index_related_item)
@@ -351,6 +698,93 @@ class MainWindow(QMainWindow):
         self.index_sources_button.clicked.connect(self._show_index_workflow_sources)
         self.index_porting_button.clicked.connect(self._open_index_porting_target)
         self.index_recompile_button.clicked.connect(self._open_index_recompile_target)
+        self.browser_refresh_button.clicked.connect(self._refresh_browser)
+        self.browser_open_button.clicked.connect(self._open_current_browser_node_path)
+        self.browser_save_button.clicked.connect(self._save_browser_node)
+        self.browser_patch_button.clicked.connect(self._patch_browser_node)
+        self.browser_mode_combo.currentTextChanged.connect(self._reload_current_browser_node)
+        self.mcp_start_button.clicked.connect(self._start_mcp_server)
+        self.mcp_stop_button.clicked.connect(self._stop_mcp_server)
+        self.mcp_refresh_button.clicked.connect(self._refresh_mcp_config)
+        self.mcp_open_log_button.clicked.connect(self._open_mcp_log)
+        self.mcp_transport_combo.currentTextChanged.connect(self._refresh_mcp_config)
+        self.mcp_host_input.textChanged.connect(self._refresh_mcp_config)
+        self.mcp_port_input.textChanged.connect(self._refresh_mcp_config)
+        self.output_input.textChanged.connect(self._refresh_mcp_config)
+        self.tools_input.textChanged.connect(self._refresh_mcp_config)
+        self._refresh_profiles()
+        self._refresh_mcp_config()
+
+    def _mcp_options(self) -> dict:
+        output_root = self.output_input.text().strip() or str((Path.cwd() / "analysis_output").resolve())
+        tools_root = self.tools_input.text().strip() or str((Path.cwd() / "tools").resolve())
+        return {
+            "workspace_root": Path.cwd(),
+            "output_root": Path(output_root),
+            "tools_root": Path(tools_root),
+            "transport": self.mcp_transport_combo.currentText().strip() or "streamable-http",
+            "host": self.mcp_host_input.text().strip() or "127.0.0.1",
+            "port": self._parse_int(self.mcp_port_input.text().strip(), default=8000),
+            "plugin_dirs": [],
+        }
+
+    def _refresh_mcp_config(self) -> None:
+        try:
+            details = build_mcp_launch_details(**self._mcp_options())
+        except Exception as exc:
+            self.mcp_config_text.setPlainText(str(exc))
+            return
+        if self._mcp_details and self._mcp_details.get("pid"):
+            details.update(
+                {
+                    "pid": self._mcp_details.get("pid"),
+                    "log_path": self._mcp_details.get("log_path"),
+                    "client_config_path": self._mcp_details.get("client_config_path"),
+                    "state": self._mcp_details.get("state", "running"),
+                }
+            )
+        self.mcp_config_text.setPlainText(json.dumps(details, indent=2))
+
+    def _start_mcp_server(self) -> None:
+        if self._mcp_details and self._mcp_details.get("pid"):
+            self.statusBar().showMessage("MCP server is already running.")
+            return
+        try:
+            self._mcp_details = start_mcp_server_process(**self._mcp_options())
+        except Exception as exc:
+            QMessageBox.critical(self, "MCP server failed", str(exc))
+            return
+        self.mcp_status_label.setText(
+            f"Running pid={self._mcp_details.get('pid')} "
+            f"url={self._mcp_details.get('url', 'stdio')} "
+            f"log={self._mcp_details.get('log_path', '')}"
+        )
+        self.mcp_start_button.setEnabled(False)
+        self.mcp_stop_button.setEnabled(True)
+        self.mcp_open_log_button.setEnabled(True)
+        self._refresh_mcp_config()
+        self.statusBar().showMessage("MCP server started.")
+
+    def _stop_mcp_server(self) -> None:
+        pid = int((self._mcp_details or {}).get("pid") or 0)
+        if not pid:
+            return
+        result = stop_mcp_server_process(pid)
+        if not result.get("ok"):
+            QMessageBox.warning(self, "MCP server stop failed", json.dumps(result, indent=2))
+            return
+        self._mcp_details = None
+        self.mcp_status_label.setText("MCP server is not running.")
+        self.mcp_start_button.setEnabled(True)
+        self.mcp_stop_button.setEnabled(False)
+        self.mcp_open_log_button.setEnabled(False)
+        self._refresh_mcp_config()
+        self.statusBar().showMessage("MCP server stopped.")
+
+    def _open_mcp_log(self) -> None:
+        log_path = str((self._mcp_details or {}).get("log_path", "")).strip()
+        if log_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(log_path))
 
     def _browse_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Select executable or file")
@@ -370,6 +804,17 @@ class MainWindow(QMainWindow):
     def _start_analysis(self) -> None:
         target = self.target_input.text().strip()
         output_root = self.output_input.text().strip()
+        if not target and self.live_process_checkbox.isChecked():
+            try:
+                process = resolve_live_process(
+                    pid=max(0, self._parse_int(self.live_pid_input.text().strip(), default=0)),
+                    process_name=self.live_name_input.text().strip(),
+                )
+                target = str(process.get("executable_path") or Path.cwd())
+                self.target_input.setText(target)
+            except Exception as exc:
+                QMessageBox.warning(self, "Missing live process", str(exc))
+                return
         if not target:
             QMessageBox.warning(self, "Missing target", "Select a file or directory to analyze.")
             return
@@ -383,6 +828,11 @@ class MainWindow(QMainWindow):
         self.preview_label.setText("Preview")
         self.frameworks_list.clear()
         self.sources_tree.clear()
+        self.browser_tree.clear()
+        self.browser_editor.clear()
+        self.browser_status_label.setText("Analysis running; browser will populate when the report is ready.")
+        self._browser_manifest = None
+        self._current_browser_node_id = ""
         self.json_text.clear()
         self.runtime_text.clear()
         self.porting_text.clear()
@@ -394,6 +844,7 @@ class MainWindow(QMainWindow):
         self.index_related_list.clear()
         self._current_index_payload = None
         self._current_index_workflow = None
+        self._clear_background_job_paths()
         self.analyze_button.setEnabled(False)
         self.statusBar().showMessage("Analyzing...")
 
@@ -403,23 +854,11 @@ class MainWindow(QMainWindow):
             output_root=output_root,
             run_external_tools=self.external_tools_checkbox.isChecked() or run_ghidra,
             run_ghidra=run_ghidra,
-            llm_settings=LlmAssistSettings(
-                enabled=self.llm_checkbox.isChecked(),
-                auto=self.llm_auto_checkbox.isChecked(),
-                model=self.llm_model_input.text().strip() or "gpt-5.4",
-                reasoning_effort=self.llm_reasoning_combo.currentText(),
-                verbosity=self.llm_verbosity_combo.currentText(),
-                background=self.llm_background_checkbox.isChecked(),
-                max_output_tokens=self._parse_int(self.llm_max_output_input.text().strip(), default=12000),
-                user_task=self.llm_task_input.toPlainText().strip(),
-                allow_dependency_installs=self.llm_install_checkbox.isChecked(),
-                run_recompile_checks=self.llm_build_checkbox.isChecked(),
-            ),
-            runtime_trace_settings=RuntimeTraceSettings(
-                enabled=self.runtime_trace_checkbox.isChecked(),
-                duration_seconds=max(1, self._parse_int(self.runtime_trace_seconds_input.text().strip(), default=8)),
-                use_frida=self.runtime_trace_frida_checkbox.isChecked(),
-            ),
+            llm_settings=self._current_llm_settings(),
+            porting_settings=self._current_porting_settings(),
+            runtime_trace_settings=self._current_runtime_trace_settings(),
+            live_process_settings=self._current_live_process_settings(),
+            frontend_settings=self._current_frontend_settings(),
         )
         self.worker.progress.connect(self._append_log)
         self.worker.completed.connect(self._handle_report)
@@ -446,16 +885,12 @@ class MainWindow(QMainWindow):
         self._current_report = report
         self._history.insert(0, report)
         self.history_list.insertItem(0, f"{Path(report.get('target', '')).name} -> {report.get('output_dir', '')}")
-        self._populate_summary(report)
-        self._populate_runtime(report)
-        self._populate_frameworks(report)
-        self._populate_porting(report)
-        self._populate_llm(report)
-        self._populate_findings(report)
-        self._populate_artifacts(report)
-        self._populate_sources(report)
-        self._populate_index(report)
-        self.json_text.setPlainText(json.dumps(report, indent=2))
+        profile_path = self._save_analysis_profile(report=report)
+        if profile_path is not None:
+            self.statusBar().showMessage(f"Analysis complete: {report.get('output_dir', '')} | Profile: {profile_path}")
+        self._display_report(report)
+        self._auto_open_active_background_logs()
+        self._refresh_profiles()
 
     def _handle_error(self, error: str) -> None:
         self.analyze_button.setEnabled(True)
@@ -518,6 +953,11 @@ class MainWindow(QMainWindow):
             if parts:
                 parts.extend(["", ""])
             parts.extend(["Frida Helper Stderr", "", frida_stderr])
+        live_manifest = self._load_artifact_json(report, "Live process attach manifest")
+        if live_manifest:
+            if parts:
+                parts.extend(["", ""])
+            parts.extend(["Live Process Attach", "", json.dumps(live_manifest, indent=2)])
         self.runtime_text.setPlainText("\n".join(parts))
 
     def _populate_porting(self, report: dict) -> None:
@@ -551,6 +991,184 @@ class MainWindow(QMainWindow):
             item = QTreeWidgetItem([source.get("original_path", ""), source.get("restored_path", "")])
             item.setData(0, Qt.UserRole, source.get("restored_path"))
             self.sources_tree.addTopLevelItem(item)
+
+    def _populate_browser(self, report: dict) -> None:
+        self.browser_tree.clear()
+        self.browser_editor.clear()
+        self._browser_manifest = None
+        self._current_browser_node_id = ""
+        output_dir = str(report.get("output_dir", "")).strip()
+        if not output_dir:
+            self.browser_status_label.setText("No output directory is available for this report.")
+            return
+        try:
+            manifest = build_browser_workspace(Path(output_dir))
+        except Exception as exc:
+            self.browser_status_label.setText(f"Browser workspace failed: {exc}")
+            return
+        self._browser_manifest = manifest
+        summary = manifest.get("summary") or {}
+        self.browser_status_label.setText(
+            f"Browser workspace: {manifest.get('workspace_root')} | "
+            f"{summary.get('node_count', 0)} nodes, {summary.get('editable_count', 0)} editable"
+        )
+        folders: dict[str, QTreeWidgetItem] = {}
+        for node in manifest.get("nodes") or []:
+            relative_path = str(node.get("relative_path", "")).replace("\\", "/").strip("/")
+            if not relative_path:
+                continue
+            parts = relative_path.split("/")
+            parent: QTreeWidgetItem | None = None
+            key_parts: list[str] = []
+            for part in parts[:-1]:
+                key_parts.append(part)
+                key = "/".join(key_parts)
+                folder_item = folders.get(key)
+                if folder_item is None:
+                    folder_item = QTreeWidgetItem([part, "folder", "", ""])
+                    folder_item.setData(0, Qt.UserRole, "")
+                    folders[key] = folder_item
+                    if parent is None:
+                        self.browser_tree.addTopLevelItem(folder_item)
+                    else:
+                        parent.addChild(folder_item)
+                parent = folder_item
+            file_item = QTreeWidgetItem(
+                [
+                    parts[-1],
+                    str(node.get("view_mode", "")),
+                    str(node.get("origin", "")),
+                    str(node.get("size", "")),
+                ]
+            )
+            file_item.setData(0, Qt.UserRole, node.get("id"))
+            file_item.setData(0, Qt.UserRole + 1, node.get("path"))
+            if parent is None:
+                self.browser_tree.addTopLevelItem(file_item)
+            else:
+                parent.addChild(file_item)
+        for index in range(min(4, self.browser_tree.topLevelItemCount())):
+            self.browser_tree.topLevelItem(index).setExpanded(True)
+        self.browser_tree.resizeColumnToContents(0)
+
+    def _refresh_browser(self) -> None:
+        if self._current_report is None:
+            self.browser_status_label.setText("No report is loaded.")
+            return
+        self._populate_browser(self._current_report)
+
+    def _preview_browser_node(self, current: QTreeWidgetItem | None, previous: QTreeWidgetItem | None) -> None:
+        del previous
+        if current is None:
+            return
+        node_id = str(current.data(0, Qt.UserRole) or "")
+        if not node_id:
+            return
+        self._current_browser_node_id = node_id
+        self._reload_current_browser_node()
+
+    def _reload_current_browser_node(self, *_args) -> None:
+        node_id = self._current_browser_node_id
+        if not node_id or self._current_report is None:
+            return
+        mode = self.browser_mode_combo.currentText().strip() or "auto"
+        offset = self._parse_browser_offset()
+        try:
+            result = read_browser_node(
+                self._current_report.get("output_dir", ""),
+                node_id,
+                mode=mode,
+                offset=offset,
+                max_bytes=256 * 1024,
+            )
+        except Exception as exc:
+            self.browser_editor.setReadOnly(True)
+            self.browser_editor.setPlainText(str(exc))
+            return
+        node = result.get("node") or {}
+        self.browser_editor.setReadOnly(not bool(node.get("editable")))
+        self.browser_editor.setPlainText(str(result.get("content", "")))
+        self.browser_status_label.setText(
+            f"{node.get('relative_path')} | mode={result.get('view_mode')} | "
+            f"bytes={result.get('returned_bytes')}/{result.get('total_bytes')} | editable={node.get('editable')}"
+        )
+
+    def _save_browser_node(self) -> None:
+        if not self._current_browser_node_id or self._current_report is None:
+            return
+        mode = self.browser_mode_combo.currentText().strip() or "auto"
+        if mode == "auto":
+            node = self._browser_node_by_id(self._current_browser_node_id) or {}
+            mode = str(node.get("view_mode") or "text")
+            if mode == "image":
+                mode = "hex"
+        try:
+            result = write_browser_node(
+                self._current_report.get("output_dir", ""),
+                self._current_browser_node_id,
+                self.browser_editor.toPlainText(),
+                mode=mode,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Browser save failed", str(exc))
+            return
+        rebuild = result.get("rebuild") or {}
+        rebuild_target = rebuild.get("rebuilt_artifact") or rebuild.get("staged_path") or rebuild.get("workspace_root") or ""
+        self.browser_status_label.setText(
+            f"Saved {result.get('written_bytes')} byte(s); "
+            f"rebuild={rebuild.get('kind', 'unknown')} ok={rebuild.get('ok')} {rebuild_target}"
+        )
+        self._reload_current_browser_node()
+
+    def _patch_browser_node(self) -> None:
+        if not self._current_browser_node_id or self._current_report is None:
+            return
+        hex_bytes = self.browser_patch_bytes_input.text().strip()
+        if not hex_bytes:
+            return
+        try:
+            result = patch_browser_node_bytes(
+                self._current_report.get("output_dir", ""),
+                self._current_browser_node_id,
+                self._parse_browser_offset(),
+                hex_bytes,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Hex patch failed", str(exc))
+            return
+        rebuild = result.get("rebuild") or {}
+        rebuild_target = rebuild.get("rebuilt_artifact") or rebuild.get("staged_path") or rebuild.get("workspace_root") or ""
+        self.browser_status_label.setText(
+            f"Patched {result.get('written_bytes')} byte(s) at offset {result.get('offset')}; "
+            f"rebuild={rebuild.get('kind', 'unknown')} ok={rebuild.get('ok')} {rebuild_target}"
+        )
+        self._reload_current_browser_node()
+
+    def _open_browser_item_path(self, item: QTreeWidgetItem) -> None:
+        path = str(item.data(0, Qt.UserRole + 1) or "")
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _open_current_browser_node_path(self) -> None:
+        node = self._browser_node_by_id(self._current_browser_node_id)
+        if node and node.get("path"):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(node.get("path"))))
+
+    def _browser_node_by_id(self, node_id: str) -> dict | None:
+        manifest = self._browser_manifest or {}
+        for node in manifest.get("nodes") or []:
+            if node.get("id") == node_id:
+                return node
+        return None
+
+    def _parse_browser_offset(self) -> int:
+        text = self.browser_offset_input.text().strip().lower()
+        if not text:
+            return 0
+        try:
+            return int(text, 16 if text.startswith("0x") else 10)
+        except ValueError:
+            return 0
 
     def _preview_artifact(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
         del previous
@@ -614,6 +1232,10 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self._history):
             return
         report = self._history[index]
+        self._display_report(report)
+        self._current_report = report
+
+    def _display_report(self, report: dict) -> None:
         self._populate_summary(report)
         self._populate_runtime(report)
         self._populate_frameworks(report)
@@ -622,9 +1244,285 @@ class MainWindow(QMainWindow):
         self._populate_findings(report)
         self._populate_artifacts(report)
         self._populate_sources(report)
+        self._populate_browser(report)
         self._populate_index(report)
+        self._update_background_job_views(report)
         self.json_text.setPlainText(json.dumps(report, indent=2))
         self._current_report = report
+
+    def _clear_background_job_paths(self) -> None:
+        self._ghidra_job_paths = {}
+        self._pe_job_paths = {}
+        self.open_ghidra_log_button.setEnabled(False)
+        self.open_pe_log_button.setEnabled(False)
+        if self.ghidra_log_window is not None:
+            self.ghidra_log_window.set_job_paths(None, None)
+        if self.pe_log_window is not None:
+            self.pe_log_window.set_job_paths(None, None)
+
+    def _update_background_job_views(self, report: dict) -> None:
+        self._ghidra_job_paths = {
+            "log": self._find_artifact_path(report, "Ghidra headless log"),
+            "status": self._find_artifact_path(report, "Ghidra headless status"),
+        }
+        self._pe_job_paths = {
+            "log": self._find_artifact_path(report, "PE tools background log"),
+            "status": self._find_artifact_path(report, "PE tools background status"),
+        }
+        self.open_ghidra_log_button.setEnabled(bool(self._ghidra_job_paths["log"] or self._ghidra_job_paths["status"]))
+        self.open_pe_log_button.setEnabled(bool(self._pe_job_paths["log"] or self._pe_job_paths["status"]))
+        if self.ghidra_log_window is not None:
+            self.ghidra_log_window.set_job_paths(self._ghidra_job_paths["log"], self._ghidra_job_paths["status"])
+        if self.pe_log_window is not None:
+            self.pe_log_window.set_job_paths(self._pe_job_paths["log"], self._pe_job_paths["status"])
+
+    def _auto_open_active_background_logs(self) -> None:
+        if self._is_background_job_active(self._ghidra_job_paths):
+            self._open_ghidra_log_window()
+        if self._is_background_job_active(self._pe_job_paths):
+            self._open_pe_log_window()
+
+    def _open_ghidra_log_window(self) -> None:
+        if not (self._ghidra_job_paths.get("log") or self._ghidra_job_paths.get("status")):
+            return
+        if self.ghidra_log_window is None:
+            self.ghidra_log_window = BackgroundLogWindow("Ghidra Background Log", self)
+        self.ghidra_log_window.set_job_paths(self._ghidra_job_paths.get("log"), self._ghidra_job_paths.get("status"))
+        self.ghidra_log_window.show()
+        self.ghidra_log_window.raise_()
+        self.ghidra_log_window.activateWindow()
+
+    def _open_pe_log_window(self) -> None:
+        if not (self._pe_job_paths.get("log") or self._pe_job_paths.get("status")):
+            return
+        if self.pe_log_window is None:
+            self.pe_log_window = BackgroundLogWindow("PE Tools Background Log", self)
+        self.pe_log_window.set_job_paths(self._pe_job_paths.get("log"), self._pe_job_paths.get("status"))
+        self.pe_log_window.show()
+        self.pe_log_window.raise_()
+        self.pe_log_window.activateWindow()
+
+    @staticmethod
+    def _find_artifact_path(report: dict, description_contains: str) -> str:
+        for artifact in report.get("artifacts") or []:
+            description = str(artifact.get("description", ""))
+            path = str(artifact.get("path", "")).strip()
+            if path and description_contains.lower() in description.lower():
+                return path
+        return ""
+
+    @staticmethod
+    def _is_background_job_active(job_paths: dict[str, str]) -> bool:
+        status_path = str(job_paths.get("status", "")).strip()
+        if not status_path:
+            return False
+        candidate = Path(status_path)
+        if not candidate.exists():
+            return True
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, json.JSONDecodeError):
+            return True
+        if not isinstance(payload, dict):
+            return True
+        return str(payload.get("state", "")).strip().lower() in {"queued", "running"}
+
+    def _current_llm_settings(self) -> LlmAssistSettings:
+        return LlmAssistSettings(
+            enabled=self.llm_checkbox.isChecked(),
+            auto=self.llm_auto_checkbox.isChecked(),
+            model=self.llm_model_input.text().strip() or "gpt-5.4",
+            auth_provider=self.llm_auth_combo.currentText().strip() or "auto",
+            codex_auth_path=self.codex_auth_input.text().strip(),
+            reasoning_effort=self.llm_reasoning_combo.currentText(),
+            verbosity=self.llm_verbosity_combo.currentText(),
+            background=self.llm_background_checkbox.isChecked(),
+            max_output_tokens=self._parse_int(self.llm_max_output_input.text().strip(), default=12000),
+            user_task=self.llm_task_input.toPlainText().strip(),
+            allow_dependency_installs=self.llm_install_checkbox.isChecked(),
+            run_recompile_checks=self.llm_build_checkbox.isChecked(),
+        )
+
+    def _current_runtime_trace_settings(self) -> RuntimeTraceSettings:
+        return RuntimeTraceSettings(
+            enabled=self.runtime_trace_checkbox.isChecked(),
+            duration_seconds=max(1, self._parse_int(self.runtime_trace_seconds_input.text().strip(), default=8)),
+            use_frida=self.runtime_trace_frida_checkbox.isChecked(),
+        )
+
+    def _current_live_process_settings(self) -> LiveProcessSettings:
+        max_total_mb = max(1, self._parse_int(self.live_max_total_input.text().strip(), default=256))
+        return LiveProcessSettings(
+            enabled=self.live_process_checkbox.isChecked(),
+            pid=max(0, self._parse_int(self.live_pid_input.text().strip(), default=0)),
+            process_name=self.live_name_input.text().strip(),
+            dump_memory=self.live_memory_checkbox.isChecked(),
+            max_region_bytes=8 * 1024 * 1024,
+            max_total_bytes=max_total_mb * 1024 * 1024,
+        )
+
+    def _current_porting_settings(self) -> PortingSettings:
+        target_arch = self.porting_target_arch_combo.currentText().strip()
+        return PortingSettings(
+            enabled=self.porting_enabled_checkbox.isChecked() or bool(target_arch),
+            source_arch=self.porting_source_arch_input.text().strip(),
+            target_arch=target_arch,
+            mode=self.porting_mode_combo.currentText().strip() or "heuristic",
+        )
+
+    def _current_frontend_settings(self) -> FrontendSettings:
+        return FrontendSettings(
+            beautify_bundles=self.frontend_beautify_checkbox.isChecked(),
+        )
+
+    def _save_analysis_profile(self, report: dict | None = None) -> str | None:
+        target = self.target_input.text().strip()
+        output_root = self.output_input.text().strip()
+        if not target and self.live_process_checkbox.isChecked():
+            target = self.live_name_input.text().strip() or str(self.live_pid_input.text().strip()) or "live-process"
+        if not target:
+            return None
+        profile_name = self.profile_name_input.text().strip() or Path(target).stem
+        profile_path = save_profile(
+            build_analysis_profile(
+                name=profile_name,
+                target=target,
+                output_root=output_root,
+                run_external_tools=self.external_tools_checkbox.isChecked() or self.ghidra_checkbox.isChecked(),
+                run_ghidra=self.ghidra_checkbox.isChecked(),
+                llm_settings=self._current_llm_settings(),
+                porting_settings=self._current_porting_settings(),
+                runtime_trace_settings=self._current_runtime_trace_settings(),
+                live_process_settings=self._current_live_process_settings(),
+                frontend_settings=self._current_frontend_settings(),
+                report=report,
+                output_dir=str((report or {}).get("output_dir", "")),
+            )
+        )
+        return str(profile_path)
+
+    def _save_profile_from_form(self) -> None:
+        profile_path = self._save_analysis_profile(report=self._current_report)
+        if profile_path is None:
+            QMessageBox.warning(self, "Missing target", "Select a file or directory before saving a profile.")
+            return
+        self._refresh_profiles()
+        self.statusBar().showMessage(f"Profile saved: {profile_path}")
+
+    def _refresh_profiles(self) -> None:
+        query = self.profile_search_input.text().strip()
+        selected_kind = self.profile_kind_combo.currentText().strip()
+        if selected_kind == "All":
+            selected_kind = ""
+        self._profile_entries = list_profiles(query=query, profile_type=selected_kind.lower())
+        self.profiles_list.clear()
+        for entry in self._profile_entries:
+            label = (
+                f"[{entry.get('profile_type')}] {entry.get('name')} "
+                f"-> {entry.get('primary_target') or entry.get('secondary_target')}"
+            )
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, entry.get("path"))
+            self.profiles_list.addItem(item)
+        if not self._profile_entries:
+            self.profile_detail_text.setPlainText("No saved profiles matched the current filter.")
+            self._current_profile = None
+
+    def _show_selected_profile(self, current: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
+        del previous
+        if current is None:
+            self.profile_detail_text.clear()
+            self._current_profile = None
+            return
+        path = current.data(Qt.UserRole)
+        if not path:
+            self.profile_detail_text.clear()
+            self._current_profile = None
+            return
+        try:
+            profile = load_profile(path)
+        except (OSError, ValueError) as exc:
+            self.profile_detail_text.setPlainText(str(exc))
+            self._current_profile = None
+            return
+        self._current_profile = profile
+        self.profile_detail_text.setPlainText(json.dumps(profile, indent=2))
+
+    def _load_selected_profile(self) -> None:
+        profile = self._current_profile
+        if profile is None:
+            return
+        if str(profile.get("profile_type", "")).strip().lower() != "analysis":
+            QMessageBox.information(self, "Profile type", "Only analysis profiles can be loaded into the analysis form.")
+            return
+        settings = analysis_settings_from_profile(profile)
+        self.target_input.setText(str(settings.get("target", "")))
+        self.output_input.setText(str(settings.get("output_root", "")))
+        self.external_tools_checkbox.setChecked(bool(settings.get("run_external_tools", False)))
+        self.ghidra_checkbox.setChecked(bool(settings.get("run_ghidra", False)))
+        llm_settings = settings.get("llm_settings") or LlmAssistSettings()
+        porting_settings = settings.get("porting_settings") or PortingSettings()
+        runtime_settings = settings.get("runtime_trace_settings") or RuntimeTraceSettings()
+        live_settings = settings.get("live_process_settings") or LiveProcessSettings()
+        frontend_settings = settings.get("frontend_settings") or FrontendSettings()
+        self.frontend_beautify_checkbox.setChecked(frontend_settings.beautify_bundles)
+        self.llm_checkbox.setChecked(llm_settings.enabled)
+        self.llm_auto_checkbox.setChecked(llm_settings.auto)
+        self.llm_background_checkbox.setChecked(llm_settings.background)
+        self.llm_install_checkbox.setChecked(llm_settings.allow_dependency_installs)
+        self.llm_build_checkbox.setChecked(llm_settings.run_recompile_checks)
+        self.llm_model_input.setText(llm_settings.model)
+        self.llm_auth_combo.setCurrentText(llm_settings.auth_provider)
+        self.codex_auth_input.setText(llm_settings.codex_auth_path)
+        self.llm_reasoning_combo.setCurrentText(llm_settings.reasoning_effort)
+        self.llm_verbosity_combo.setCurrentText(llm_settings.verbosity)
+        self.llm_max_output_input.setText(str(llm_settings.max_output_tokens))
+        self.llm_task_input.setPlainText(llm_settings.user_task)
+        self.porting_enabled_checkbox.setChecked(porting_settings.enabled)
+        self.porting_source_arch_input.setText(porting_settings.source_arch)
+        self.porting_target_arch_combo.setCurrentText(porting_settings.target_arch)
+        self.porting_mode_combo.setCurrentText(porting_settings.mode)
+        self.runtime_trace_checkbox.setChecked(runtime_settings.enabled)
+        self.runtime_trace_seconds_input.setText(str(runtime_settings.duration_seconds))
+        self.runtime_trace_frida_checkbox.setChecked(runtime_settings.use_frida)
+        self.live_process_checkbox.setChecked(live_settings.enabled)
+        self.live_pid_input.setText(str(live_settings.pid or ""))
+        self.live_name_input.setText(live_settings.process_name)
+        self.live_memory_checkbox.setChecked(live_settings.dump_memory)
+        self.live_max_total_input.setText(str(max(1, live_settings.max_total_bytes // (1024 * 1024))))
+        self.profile_name_input.setText(str(profile.get("name", "")))
+        self._load_selected_profile_report()
+        self.statusBar().showMessage(f"Loaded profile: {profile.get('name', '')}")
+
+    def _load_selected_profile_report(self) -> None:
+        profile = self._current_profile
+        if profile is None:
+            return
+        last_run = profile.get("last_run") or {}
+        output_dir = Path(str(last_run.get("output_dir", "")).strip())
+        report_path = output_dir / "report.json"
+        if not report_path.exists():
+            return
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8", errors="ignore"))
+        except json.JSONDecodeError:
+            return
+        if isinstance(report, dict):
+            self._display_report(report)
+
+    def _open_selected_profile_output(self) -> None:
+        profile = self._current_profile
+        if profile is None:
+            return
+        if str(profile.get("profile_type", "")).strip().lower() == "analysis":
+            output_dir = str((profile.get("last_run") or {}).get("output_dir", "")).strip()
+            if output_dir:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(output_dir))
+                return
+        settings = profile.get("settings") or {}
+        workspace_root = str(settings.get("workspace_root", "")).strip()
+        if workspace_root:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(workspace_root))
 
     def _open_item_path(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.UserRole)
@@ -818,21 +1716,21 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         path = item.data(Qt.UserRole)
-        self.tabs.setCurrentIndex(self.tabs.indexOf(self.tabs.widget(5)))
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.artifacts_tab_widget))
         self._load_preview(path)
 
     def _show_index_workflow_artifacts(self) -> None:
         workflow = self._current_index_workflow or {}
         for path in (workflow.get("action_targets") or {}).get("artifact_paths") or []:
             if self._select_artifact_path(path):
-                self.tabs.setCurrentIndex(self.tabs.indexOf(self.tabs.widget(5)))
+                self.tabs.setCurrentIndex(self.tabs.indexOf(self.artifacts_tab_widget))
                 return
 
     def _show_index_workflow_sources(self) -> None:
         workflow = self._current_index_workflow or {}
         for path in (workflow.get("action_targets") or {}).get("recovered_source_paths") or []:
             if self._select_source_path(path):
-                self.tabs.setCurrentIndex(self.tabs.indexOf(self.tabs.widget(6)))
+                self.tabs.setCurrentIndex(self.tabs.indexOf(self.sources_tab_widget))
                 return
 
     def _open_index_porting_target(self) -> None:

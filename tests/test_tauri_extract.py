@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import struct
 import tempfile
 import unittest
@@ -9,6 +10,8 @@ import brotli
 
 from tests import _path_setup  # noqa: F401
 
+from re_pro.frontend_reconstruct import reconstruct_bundled_frontend_assets
+from re_pro.models import LlmAssistSettings
 from re_pro.tauri_extract import extract_tauri_assets, scan_tauri_asset_entries
 
 
@@ -88,6 +91,121 @@ class TauriExtractTests(unittest.TestCase):
             self.assertTrue(extracted_map.exists())
             self.assertTrue(restored_source.exists())
 
+    def test_reconstruct_bundled_frontend_assets_without_source_maps(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            assets_dir = root / "tauri" / "assets"
+            js_path = assets_dir / "assets" / "index-test.js"
+            css_path = assets_dir / "assets" / "index-test.css"
+            json_path = assets_dir / "manifest.json"
+            png_path = assets_dir / "assets" / "logo.png"
+            js_path.parent.mkdir(parents=True)
+            js_path.write_text("function main(){const value=1;console.log(value)}main();", encoding="utf-8")
+            css_path.write_text("body{margin:0;color:red}.app{display:flex}", encoding="utf-8")
+            json_path.write_text('{"name":"demo","start_url":"/"}', encoding="utf-8")
+            png_path.write_bytes(b"\x89PNG")
+            manifest_path = root / "tauri" / "extracted_assets_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    [
+                        {"key": "/assets/index-test.js", "path": str(js_path), "raw_size": js_path.stat().st_size},
+                        {"key": "/assets/index-test.css", "path": str(css_path), "raw_size": css_path.stat().st_size},
+                        {"key": "/manifest.json", "path": str(json_path), "raw_size": json_path.stat().st_size},
+                        {"key": "/assets/logo.png", "path": str(png_path), "raw_size": png_path.stat().st_size},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = reconstruct_bundled_frontend_assets(assets_dir, manifest_path, root / "recovered_sources")
+
+            self.assertEqual(result["recovered_count"], 3)
+            restored_js = root / "recovered_sources" / "tauri_bundle" / "assets" / "index-test.js"
+            restored_css = root / "recovered_sources" / "tauri_bundle" / "assets" / "index-test.css"
+            restored_json = root / "recovered_sources" / "tauri_bundle" / "manifest.json"
+            self.assertTrue(restored_js.exists())
+            self.assertTrue(restored_css.exists())
+            self.assertTrue(restored_json.exists())
+            self.assertIn("bundled asset reconstruction", restored_js.read_text(encoding="utf-8"))
+            self.assertIn("\n", restored_js.read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(restored_json.read_text(encoding="utf-8"))["name"], "demo")
+            self.assertTrue((root / "recovered_sources" / "tauri_bundle" / "BUNDLE_RECONSTRUCTION_MANIFEST.json").exists())
+
+    def test_reconstruct_bundled_frontend_assets_lifts_jsx_and_rewrites_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            assets_dir = root / "assets"
+            assets_dir.mkdir()
+            banner = assets_dir / "banner-B9VgUWZ2.js"
+            runtime = assets_dir / "jsx-runtime-ebkFq_df.js"
+            logger = assets_dir / "logger-VlXfBBlQ.js"
+            chevron = assets_dir / "chevron-D6MfOAjU.js"
+            banner.write_text(
+                "import{t}from'./jsx-runtime-ebkFq_df.js';"
+                "import{o as e}from'./logger-VlXfBBlQ.js';"
+                "import{n}from'./chevron-D6MfOAjU.js';"
+                "var a=t();"
+                "function o(e){let t=(0,i.c)(4),s=Symbol.for(`react.early_return_sentinel`),{title:r}=e;return(0,a.jsxs)(`div`,{children:[(0,a.jsx)(n,{}),(0,a.jsx)(`h3`,{children:r})]})}"
+                "export{o as t};"
+                "//# sourceMappingURL=banner-B9VgUWZ2.js.map",
+                encoding="utf-8",
+            )
+            runtime.write_text("export const t=()=>({jsx(){}});", encoding="utf-8")
+            logger.write_text("export function o(){}", encoding="utf-8")
+            chevron.write_text("export function n(){return null}", encoding="utf-8")
+
+            result = reconstruct_bundled_frontend_assets(assets_dir, root / "missing_manifest.json", root / "sources")
+
+            self.assertEqual(result["recovered_count"], 4)
+            restored = root / "sources" / "tauri_bundle" / "banner.js"
+            text = restored.read_text(encoding="utf-8")
+            self.assertIn("from './jsx-runtime.js'", text)
+            self.assertIn("from './logger.js'", text)
+            self.assertIn("from './chevron.js'", text)
+            self.assertIn("t as createJsxRuntime", text)
+            self.assertIn("o as createLogger", text)
+            self.assertIn("n as Chevron", text)
+            self.assertLess(text.index("from './chevron.js'"), text.index("const REACT_EARLY_RETURN_SENTINEL"))
+            self.assertIn("const jsxRuntime =", text)
+            self.assertIn("function Banner(", text)
+            self.assertIn("export { Banner as t }", text)
+            self.assertIn("function Banner(props)", text)
+            self.assertIn("<Chevron />", text)
+            self.assertIn("<h3>{title}</h3>", text)
+            self.assertIn("Source-lift features:", text)
+            manifest = json.loads((root / "sources" / "tauri_bundle" / "BUNDLE_RECONSTRUCTION_MANIFEST.json").read_text(encoding="utf-8"))
+            banner_entry = next(item for item in manifest["files"] if item["cleaned_path"] == "banner.js")
+            self.assertTrue(banner_entry["source_lift"]["ast"]["ok"])
+            self.assertEqual(banner_entry["source_lift"]["equivalence"]["missing_relative_imports"], [])
+            self.assertIn("module_graph", manifest)
+            self.assertIn("llm_source_grade", manifest)
+
+    def test_reconstruct_bundled_frontend_assets_optionally_runs_llm_source_grade(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            assets_dir = root / "assets"
+            assets_dir.mkdir()
+            (assets_dir / "panel-A1b2C3d4.js").write_text(
+                "import{t}from'./jsx-runtime-ebkFq_df.js';var a=t();function o(e){let{title:n}=e;return(0,a.jsx)(`h3`,{children:n})}export{o as t};",
+                encoding="utf-8",
+            )
+            (assets_dir / "jsx-runtime-ebkFq_df.js").write_text("export const t=()=>({jsx(){}});", encoding="utf-8")
+
+            result = reconstruct_bundled_frontend_assets(
+                assets_dir,
+                root / "missing_manifest.json",
+                root / "sources",
+                llm_settings=LlmAssistSettings(enabled=True, background=False),
+                llm_client_factory=_FakeFrontendLlmClient,
+            )
+
+            manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["llm_source_grade"]["status"], "completed")
+            self.assertGreaterEqual(manifest["llm_source_grade"]["rewritten_count"], 1)
+            llm_outputs = list((root / "sources" / "tauri_bundle" / "SOURCE_GRADE_LLM").glob("*.source-grade.tsx"))
+            self.assertTrue(llm_outputs)
+            self.assertIn("SourceGradePanel", llm_outputs[0].read_text(encoding="utf-8"))
+
 
 def _make_fake_pe(rdata_bytes: bytes, image_base: int) -> bytes:
     data = bytearray(max(0x1200, 0x200 + len(rdata_bytes)))
@@ -102,6 +220,14 @@ def _make_fake_pe(rdata_bytes: bytes, image_base: int) -> bytes:
     struct.pack_into("<IIII", data, section_offset + 8, len(rdata_bytes), 0x1000, len(rdata_bytes), 0x200)
     data[0x200 : 0x200 + len(rdata_bytes)] = rdata_bytes
     return bytes(data)
+
+
+class _FakeFrontendLlmClient:
+    class responses:
+        @staticmethod
+        def create(**kwargs):
+            del kwargs
+            return type("Response", (), {"output_text": "export function SourceGradePanel() { return <h3 />; }\n"})()
 
 
 if __name__ == "__main__":

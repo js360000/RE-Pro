@@ -32,7 +32,9 @@ class PDBAnalyzerTests(unittest.TestCase):
             def run_command_side_effect(command, **kwargs):
                 if "-summary" in command:
                     return 0, "Summary\n", ""
-                return 0, "Publics\n", ""
+                if "-publics" in command:
+                    return 0, "public: void __cdecl Foo::Bar(void)\n", ""
+                return 0, r"C:\src\Foo.cpp\n", ""
 
             with (
                 patch("re_pro.analyzers.pdb.resolve_command", return_value=["llvm-pdbutil"]),
@@ -43,6 +45,7 @@ class PDBAnalyzerTests(unittest.TestCase):
             self.assertTrue(any(artifact.description == "Recovered sibling PDB file" for artifact in report.artifacts))
             self.assertTrue(any("llvm-pdbutil" in artifact.description for artifact in report.artifacts))
             self.assertTrue(any(finding.title == "PDB symbols exported" for finding in report.findings))
+            self.assertTrue(any(source.original_path.replace("\\", "/").endswith("C:/src/Foo.cpp") for source in report.recovered_sources))
 
     def test_pdb_analyzer_acquires_remote_pdb_when_local_file_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -64,7 +67,9 @@ class PDBAnalyzerTests(unittest.TestCase):
             def run_command_side_effect(command, **kwargs):
                 if "-summary" in command:
                     return 0, "Summary\n", ""
-                return 0, "Publics\n", ""
+                if "-publics" in command:
+                    return 0, "public: void __cdecl Foo::Bar(void)\n", ""
+                return 0, r"C:\src\Foo.cpp\n", ""
 
             with (
                 patch("re_pro.analyzers.pdb.acquire_pdbs_from_symbol_servers", return_value=[{"path": str(remote_pdb), "server": "https://msdl.microsoft.com/download/symbols/"}]),

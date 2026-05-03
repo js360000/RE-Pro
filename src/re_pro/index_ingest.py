@@ -26,6 +26,15 @@ PROGRAM_INFO_DESCRIPTIONS = {
     "Ghidra program metadata export": "ghidra",
 }
 
+DECOMPILED_EXPORT_DESCRIPTIONS = {
+    "Ghidra targeted pseudo-code export": "ghidra",
+}
+
+CLASS_EXPORT_DESCRIPTIONS = {
+    "MSVC RTTI class manifest": "msvc_rtti",
+    "Ghidra enriched class manifest": "msvc_rtti",
+}
+
 
 def ingest_structured_artifacts(index: AnalysisIndex, report) -> dict[str, int]:
     target_id = index.make_id("target", report.target)
@@ -47,6 +56,14 @@ def ingest_structured_artifacts(index: AnalysisIndex, report) -> dict[str, int]:
         tool_name = PROGRAM_INFO_DESCRIPTIONS.get(artifact.description)
         if tool_name:
             _ingest_program_info(index, target_id, path, tool_name)
+            continue
+        tool_name = DECOMPILED_EXPORT_DESCRIPTIONS.get(artifact.description)
+        if tool_name:
+            _ingest_decompiled_export(index, target_id, path, tool_name, function_entities)
+            continue
+        tool_name = CLASS_EXPORT_DESCRIPTIONS.get(artifact.description)
+        if tool_name:
+            _ingest_class_manifest(index, target_id, path, tool_name, function_entities)
 
     function_correlations = _correlate_by_address(index, function_entities, predicate="correlates_with")
     string_correlations = _correlate_by_address(index, string_entities, predicate="correlates_with")
@@ -161,6 +178,213 @@ def _ingest_program_info(index: AnalysisIndex, target_id: str, path: Path, tool_
     tool_id = index.add_entity("tool", tool_name, tool_name, attributes={"kind": "external_re_tool"})
     index.add_relation(tool_id, "reported_program_info", info_id, attributes={"source_path": str(path)})
     index.add_relation(info_id, "originates_from_artifact", artifact_id, attributes={"tool": tool_name})
+
+
+def _ingest_decompiled_export(
+    index: AnalysisIndex,
+    target_id: str,
+    path: Path,
+    tool_name: str,
+    function_entities: dict[tuple[str, str], str],
+) -> None:
+    artifact_id = index.add_entity(
+        "artifact",
+        str(path),
+        path.name,
+        attributes={"path": str(path), "category": "json", "description": f"{tool_name} targeted pseudo-code export"},
+    )
+    tool_id = index.add_entity("tool", tool_name, tool_name, attributes={"kind": "external_re_tool"})
+    for entry in _load_json_list(path):
+        address = _normalize_address(entry.get("entry_point") or entry.get("requested_address"))
+        name = str(entry.get("name") or entry.get("signature") or address or "function")
+        key = f"{tool_name}:{address or name.lower()}"
+        function_id = index.add_entity(
+            "function",
+            key,
+            name,
+            attributes={
+                "tool": tool_name,
+                "address": address,
+                "signature": entry.get("signature"),
+                "namespace": entry.get("namespace"),
+                "decompile_success": entry.get("decompile_success"),
+                "decompiled_c": entry.get("decompiled_c"),
+                "pseudo_path": entry.get("pseudo_path"),
+                "return_type": entry.get("return_type"),
+                "params": entry.get("parameters"),
+                "caller_count": entry.get("caller_count"),
+                "callers": entry.get("callers"),
+                "callsite_argument_hints": entry.get("callsite_argument_hints"),
+                "result_hints": entry.get("result_hints"),
+                "source_path": str(path),
+            },
+        )
+        index.add_relation(target_id, "has_function_candidate", function_id, attributes={"tool": tool_name})
+        index.add_relation(tool_id, "decompiled_function", function_id, attributes={"source_path": str(path)})
+        index.add_relation(function_id, "originates_from_artifact", artifact_id, attributes={"tool": tool_name})
+        if address:
+            function_entities[(tool_name, address)] = function_id
+
+
+def _ingest_class_manifest(
+    index: AnalysisIndex,
+    target_id: str,
+    path: Path,
+    tool_name: str,
+    function_entities: dict[tuple[str, str], str],
+) -> None:
+    payload = _load_json_object(path)
+    if not isinstance(payload, dict):
+        return
+
+    artifact_id = index.add_entity(
+        "artifact",
+        str(path),
+        path.name,
+        attributes={"path": str(path), "category": "json", "description": f"{tool_name} class manifest"},
+    )
+    tool_id = index.add_entity("tool", tool_name, tool_name, attributes={"kind": "class_recovery_tool"})
+
+    for class_entry in payload.get("classes") or []:
+        if not isinstance(class_entry, dict):
+            continue
+        class_name = str(class_entry.get("name", "")).strip()
+        if not class_name:
+            continue
+        class_key = f"{tool_name}:{class_name.lower()}"
+        class_id = index.add_entity(
+            "class",
+            class_key,
+            class_name,
+            attributes={
+                "tool": tool_name,
+                "kind": class_entry.get("kind"),
+                "mangled_name": class_entry.get("mangled_name"),
+                "type_descriptor_rva": class_entry.get("type_descriptor_rva"),
+                "estimated_base_size": class_entry.get("estimated_base_size"),
+                "estimated_object_size": class_entry.get("estimated_object_size"),
+                "estimated_tail_padding": class_entry.get("estimated_tail_padding"),
+                "layout_strategy": class_entry.get("layout_strategy"),
+                "layout_sources": class_entry.get("layout_sources"),
+                "subobjects": class_entry.get("subobjects"),
+                "constructor_phases": class_entry.get("constructor_phases"),
+                "destructor_phases": class_entry.get("destructor_phases"),
+                "class_call_edges": class_entry.get("class_call_edges"),
+                "flag_domains": class_entry.get("flag_domains"),
+                "symbol_recovery": class_entry.get("symbol_recovery"),
+                "benchmark_capabilities": class_entry.get("benchmark_capabilities"),
+                "recovery_capabilities": class_entry.get("recovery_capabilities"),
+                "cross_tool_fusion": class_entry.get("cross_tool_fusion"),
+                "source_path": str(path),
+            },
+        )
+        index.add_relation(target_id, "contains_class_candidate", class_id, attributes={"tool": tool_name})
+        index.add_relation(tool_id, "identified_class", class_id, attributes={"source_path": str(path)})
+        index.add_relation(class_id, "originates_from_artifact", artifact_id, attributes={"tool": tool_name})
+
+        for base_name in class_entry.get("base_classes") or []:
+            base_label = str(base_name).strip()
+            if not base_label:
+                continue
+            base_id = index.add_entity("class", f"{tool_name}:{base_label.lower()}", base_label, attributes={"tool": tool_name})
+            index.add_relation(class_id, "inherits_from", base_id, attributes={"tool": tool_name})
+
+        for vtable in class_entry.get("vtables") or []:
+            if not isinstance(vtable, dict):
+                continue
+            vtable_rva = _normalize_address(vtable.get("rva") or vtable.get("address"))
+            if not vtable_rva:
+                continue
+            vtable_id = index.add_entity(
+                "vtable",
+                f"{tool_name}:{vtable_rva}",
+                f"{class_name}::{vtable_rva}",
+                attributes={
+                    "tool": tool_name,
+                    "rva": vtable.get("rva"),
+                    "address": vtable.get("address"),
+                    "method_count": vtable.get("method_count"),
+                    "source_path": str(path),
+                },
+            )
+            index.add_relation(class_id, "owns_vtable", vtable_id, attributes={"tool": tool_name})
+            index.add_relation(vtable_id, "originates_from_artifact", artifact_id, attributes={"tool": tool_name})
+
+        for method in class_entry.get("methods") or []:
+            if not isinstance(method, dict):
+                continue
+            address = _normalize_address(method.get("address") or method.get("rva"))
+            method_name = str(method.get("name", "")).strip() or address or "virtual_method"
+            display_name = str(method.get("display_name", "")).strip() or method_name
+            label = str(method.get("qualified_name", "")).strip() or f"{class_name}::{display_name}"
+            key = f"{tool_name}:{address or method_name.lower()}"
+            method_id = index.add_entity(
+                "function",
+                key,
+                label,
+                attributes={
+                    "tool": tool_name,
+                    "address": address,
+                    "slot": method.get("slot"),
+                    "class_name": class_name,
+                    "vtable_rva": method.get("vtable_rva"),
+                    "method_name": display_name,
+                    "method_kind": method.get("method_kind"),
+                    "semantic_alias": method.get("semantic_alias"),
+                    "return_type": method.get("return_type"),
+                    "params": method.get("params"),
+                    "caller_count": method.get("caller_count"),
+                    "caller_names": method.get("caller_names"),
+                    "callsite_argument_hints": method.get("callsite_argument_hints"),
+                    "result_hints": method.get("result_hints"),
+                    "return_type_inference": method.get("return_type_inference"),
+                    "is_thunk": method.get("is_thunk"),
+                    "thunk_target": method.get("thunk_target"),
+                    "thunk_kind": method.get("thunk_kind"),
+                    "class_call_edges": method.get("class_call_edges"),
+                    "flag_inferences": method.get("flag_inferences"),
+                    "enum_flag_domain": method.get("enum_flag_domain"),
+                    "namespace": "::".join(class_name.split("::")[:-1]) if "::" in class_name else None,
+                    "source_path": str(path),
+                },
+            )
+            index.add_relation(class_id, "declares_method_candidate", method_id, attributes={"tool": tool_name})
+            index.add_relation(tool_id, "identified_function", method_id, attributes={"source_path": str(path)})
+            index.add_relation(method_id, "originates_from_artifact", artifact_id, attributes={"tool": tool_name})
+            if address:
+                function_entities[(tool_name, address)] = method_id
+
+        for member in class_entry.get("members") or []:
+            if not isinstance(member, dict):
+                continue
+            member_name = str(member.get("name") or "").strip()
+            if not member_name:
+                continue
+            member_id = index.add_entity(
+                "field",
+                f"{tool_name}:{class_name.lower()}::{member_name.lower()}",
+                f"{class_name}::{member_name}",
+                attributes={
+                    "tool": tool_name,
+                    "class_name": class_name,
+                    "field_name": member_name,
+                    "type": member.get("type"),
+                    "inference_reason": member.get("inference_reason"),
+                    "evidence": member.get("evidence"),
+                    "estimated_offset": member.get("estimated_offset"),
+                    "estimated_size": member.get("estimated_size"),
+                    "layout_index": member.get("layout_index"),
+                    "layout_confidence": member.get("layout_confidence"),
+                    "layout_basis": member.get("layout_basis"),
+                    "storage_shape": member.get("storage_shape"),
+                    "declaration_confidence": member.get("declaration_confidence"),
+                    "primary_provenance": member.get("primary_provenance"),
+                    "layout_provenance": member.get("layout_provenance"),
+                    "source_path": str(path),
+                },
+            )
+            index.add_relation(class_id, "declares_field_candidate", member_id, attributes={"tool": tool_name})
+            index.add_relation(member_id, "originates_from_artifact", artifact_id, attributes={"tool": tool_name})
 
 
 def _correlate_by_address(

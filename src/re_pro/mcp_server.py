@@ -18,8 +18,12 @@ from mcp.types import (
 )
 
 from .analysis_diff import compare_analysis_runs, create_patch_bundle_from_runs
+from .analyzers.porting import generate_architecture_port_from_run
 from .dependency_installer import DependencyInstaller
 from .engine import ReverseEngineeringEngine
+from .live_process import capture_live_process
+from .live_process import list_live_processes
+from .models import LiveProcessSettings
 from .plugins import build_analyzers, resolve_plugin_dirs
 from .recompile import (
     create_recompile_workspace,
@@ -30,6 +34,10 @@ from .recompile import (
     validate_reconstruction_file,
 )
 from .utils import ensure_dir, safe_output_path, sanitize_text
+from .workspace_browser import build_browser_workspace
+from .workspace_browser import patch_browser_node_bytes
+from .workspace_browser import read_browser_node
+from .workspace_browser import write_browser_node
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -155,6 +163,9 @@ def build_mcp_server(
         plugin_dirs: list[str] | None = None,
         run_external_tools: bool = False,
         run_ghidra: bool = False,
+        live_pid: int = 0,
+        live_process_name: str = "",
+        live_dump_memory: bool = True,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         effective_output_root = Path(output_root).resolve() if output_root else state.output_root
@@ -166,10 +177,54 @@ def build_mcp_server(
             run_external_tools=run_external_tools or run_ghidra,
             run_ghidra=run_ghidra,
             plugin_dirs=effective_plugin_dirs,
+            live_process_settings=LiveProcessSettings(
+                enabled=bool(live_pid or live_process_name),
+                pid=live_pid,
+                process_name=live_process_name,
+                dump_memory=live_dump_memory,
+            ),
         )
         report = engine.analyze(target)
         state.known_run_dirs.add(Path(report.output_dir).resolve())
         return report.to_dict()
+
+    @server.tool(
+        name="list_live_processes",
+        description="List running local processes visible to RE-Pro, optionally filtered by name/path/command line.",
+        structured_output=True,
+    )
+    def list_live_processes_tool(query: str = "", limit: int = 100) -> dict[str, Any]:
+        return {"processes": list_live_processes(query, limit=limit)}
+
+    @server.tool(
+        name="capture_live_process",
+        description="Attach to a running local process and capture modules, readable memory metadata, selected dumps, carved payloads, and strings.",
+        structured_output=True,
+    )
+    def capture_live_process_tool(
+        output_dir: str,
+        pid: int = 0,
+        process_name: str = "",
+        dump_memory: bool = True,
+        max_region_mb: int = 8,
+        max_total_mb: int = 256,
+        include_mapped_images: bool = False,
+        include_all_readable: bool = False,
+    ) -> dict[str, Any]:
+        return capture_live_process(
+            output_dir=Path(output_dir),
+            settings=LiveProcessSettings(
+                enabled=True,
+                pid=pid,
+                process_name=process_name,
+                dump_memory=dump_memory,
+                max_region_bytes=max(4096, max_region_mb * 1024 * 1024),
+                max_total_bytes=max(4096, max_total_mb * 1024 * 1024),
+                include_mapped_images=include_mapped_images,
+                include_all_readable=include_all_readable,
+            ),
+            logger=state.logger,
+        )
 
     @server.tool(
         name="install_tooling",
@@ -304,6 +359,47 @@ def build_mcp_server(
         return _read_output_file(Path(path), offset=offset, max_bytes=max_bytes)
 
     @server.tool(
+        name="build_browser_workspace",
+        description=(
+            "Build or refresh a source-first editable file browser for one analysis run. "
+            "Recovered source is listed before pseudo-source, artifacts, archive members, and raw binaries."
+        ),
+        structured_output=True,
+    )
+    def build_browser_workspace_tool(run_output_dir: str) -> dict[str, Any]:
+        return build_browser_workspace(Path(run_output_dir))
+
+    @server.tool(
+        name="read_browser_node",
+        description="Read one file-browser node as text, JSON, hex, or base64.",
+        structured_output=True,
+    )
+    def read_browser_node_tool(
+        run_output_dir: str,
+        node_id: str,
+        mode: str = "auto",
+        offset: int = 0,
+        max_bytes: int = 65536,
+    ) -> dict[str, Any]:
+        return read_browser_node(Path(run_output_dir), node_id, mode=mode, offset=offset, max_bytes=max_bytes)
+
+    @server.tool(
+        name="write_browser_node",
+        description="Overwrite an editable browser node. Prefer source/pseudo-source nodes before binary patching.",
+        structured_output=True,
+    )
+    def write_browser_node_tool(run_output_dir: str, node_id: str, content: str, mode: str = "text") -> dict[str, Any]:
+        return write_browser_node(Path(run_output_dir), node_id, content, mode=mode)
+
+    @server.tool(
+        name="patch_browser_node_bytes",
+        description="Patch hexadecimal bytes into an editable browser node at a byte offset.",
+        structured_output=True,
+    )
+    def patch_browser_node_bytes_tool(run_output_dir: str, node_id: str, offset: int, hex_bytes: str) -> dict[str, Any]:
+        return patch_browser_node_bytes(Path(run_output_dir), node_id, offset, hex_bytes)
+
+    @server.tool(
         name="prepare_recompile_workspace",
         description="Create or refresh a recompile workspace for one analysis run.",
         structured_output=True,
@@ -311,6 +407,27 @@ def build_mcp_server(
     def prepare_recompile_workspace(run_output_dir: str) -> dict[str, Any]:
         report = _load_report_dict(Path(run_output_dir))
         return _prepare_recompile_workspace(Path(run_output_dir), report)
+
+    @server.tool(
+        name="prepare_architecture_port",
+        description="Generate or refresh target-architecture source-port scaffolding for an existing analysis run.",
+        structured_output=True,
+    )
+    def prepare_architecture_port(
+        run_output_dir: str,
+        target_arch: str = "arm64",
+        source_arch: str = "",
+        mode: str = "heuristic",
+    ) -> dict[str, Any]:
+        if mode not in {"heuristic", "llm", "hybrid"}:
+            raise ValueError("mode must be one of: heuristic, llm, hybrid")
+        return generate_architecture_port_from_run(
+            Path(run_output_dir),
+            source_arch=source_arch,
+            target_arch=target_arch,
+            mode=mode,
+            logger=state.logger,
+        )
 
     @server.tool(
         name="inspect_toolchains",
@@ -410,12 +527,16 @@ def build_mcp_server(
         ecosystem: str,
         action: str,
         artifact_path: str = "",
+        output_path: str = "",
         keystore_path: str = "",
         key_alias: str = "",
         store_pass: str = "",
         key_pass: str = "",
         patch_bundle_path: str = "",
         target_root: str = "",
+        compression: str = "zlib",
+        compression_level: int = 9,
+        block_size: int = 0x10000,
     ) -> dict[str, Any]:
         report = _load_report_dict(Path(run_output_dir))
         workspace = _prepare_recompile_workspace(Path(run_output_dir), report)
@@ -424,12 +545,16 @@ def build_mcp_server(
             ecosystem=ecosystem,
             action=action,
             artifact_path=artifact_path,
+            output_path=output_path,
             keystore_path=keystore_path,
             key_alias=key_alias,
             store_pass=store_pass,
             key_pass=key_pass,
             patch_bundle_path=patch_bundle_path,
             target_root=target_root,
+            compression=compression,
+            compression_level=compression_level,
+            block_size=block_size,
             logger=state.logger,
         )
 

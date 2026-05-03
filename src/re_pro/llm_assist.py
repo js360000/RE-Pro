@@ -12,6 +12,8 @@ from .recompile import (
     run_recompile_command,
     validate_reconstruction_file,
 )
+from .llm_auth import build_openai_client_for_settings
+from .llm_auth import llm_auth_status
 from .utils import ensure_dir, safe_output_path
 
 
@@ -51,13 +53,14 @@ def run_llm_assist_job(
         status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
 
     write_status("running", started_at=_utc_now())
-    log("Preparing GPT-5.4 reconstruction run")
+    log("Preparing LLM reconstruction run")
 
     try:
-        client = client_factory() if client_factory else _default_client_factory()
         context_items = payload.get("context_items") or []
         analysis_index = payload.get("analysis_index") or {}
         settings = payload.get("settings") or {}
+        client = client_factory() if client_factory else _default_client_factory(settings)
+        naming_hints = _find_context_json(context_items, "naming_hints.json")
         tools = _tool_specs()
         writes: list[dict[str, Any]] = []
         validations: list[dict[str, Any]] = []
@@ -94,6 +97,7 @@ def run_llm_assist_job(
                     validations=validations,
                     recompile_root=recompile_root,
                     settings=settings,
+                    naming_hints=naming_hints,
                     logger=log,
                 )
                 tool_outputs.append(
@@ -125,6 +129,7 @@ def run_llm_assist_job(
             "completed",
             finished_at=_utc_now(),
             model=settings.get("model", "gpt-5.4"),
+            auth=llm_auth_status(SimpleSettings(settings)),
             response_id=_get_value(response, "id"),
             tool_rounds=tool_rounds,
             written_files=len(writes),
@@ -145,17 +150,40 @@ def run_llm_assist_job(
         raise
 
 
-def _default_client_factory():
-    from openai import OpenAI
+def _default_client_factory(settings: dict[str, Any]):
+    return build_openai_client_for_settings(SimpleSettings(settings))
 
-    return OpenAI()
+
+class SimpleSettings:
+    def __init__(self, values: dict[str, Any]) -> None:
+        self.values = values
+
+    def __getattr__(self, name: str) -> Any:
+        return self.values.get(name)
 
 
 def _build_instructions(payload: dict[str, Any]) -> str:
+    settings = payload.get("settings") or {}
+    porting = settings.get("porting_settings") or {}
+    target_arch = str(porting.get("target_arch", "")).strip()
+    source_arch = str(porting.get("source_arch", "")).strip()
+    porting_instruction = ""
+    if target_arch:
+        porting_instruction = (
+            f" The requested architecture port is {source_arch or 'detected source architecture'} to {target_arch}; "
+            "emit source-level equivalents that compile for the target architecture, isolate architecture-specific shims, "
+            "and explicitly mark any x86/x64 assumptions, calling-convention assumptions, pointer-width assumptions, SIMD intrinsics, inline assembly, or ABI-sensitive code."
+        )
     return (
         "You are assisting a reverse-engineering and platform-porting workflow. "
         "Inspect the provided context using tools before making strong claims. "
         "Use the analysis index tools to inspect normalized frameworks, artifacts, functions, strings, and cross-tool correlations before falling back to raw files. "
+        "When RTTI, vtable, class, symbol, namespace, or debug-source names are available, preserve them and let them drive filenames, class names, function names, and comments. "
+        "Do not fall back to generic names like app_approx, module1, class_1, file1, or function_401000 when naming evidence already exists. "
+        "If debug symbols or recovered source paths exist, mirror those original paths unless there is concrete contrary evidence. "
+        "If RTTI or vtable evidence links a function to a class, write the pseudo-source under that class rather than as a detached anonymous function. "
+        "When class layouts, fields, subobjects, constructor phases, thunks, call edges, or flag domains are present in naming_hints.json or the analysis index, preserve those names and comments in the reconstructed source. "
+        "Use field offsets and provenance as hard evidence for member declarations, and keep uncertain field shapes visibly marked instead of renaming them away. "
         "Create a small number of high-value reconstructed files instead of spraying low-value boilerplate. "
         "Do not invent APIs, imports, or files unless you can tie them to concrete evidence from context items, manifests, imports, strings, or prior reconstructed files. "
         "Every reconstructed file must include evidence_refs naming the context items or search hits it came from, plus a confidence value. "
@@ -165,6 +193,7 @@ def _build_instructions(payload: dict[str, Any]) -> str:
         "When certainty is low, state that clearly in comments and file content. "
         "Use plausible filenames and extensions for the detected language/framework. "
         "Write a PORTING_GUIDE.md file if portability concerns are relevant. "
+        f"{porting_instruction} "
         "Write a STRING_TO_FUNCTION_MAP.json file mapping concrete recovered strings or evidence to plausible modules/functions and confidence levels. "
         "Finish with a concise textual summary of what you reconstructed, what remains uncertain, and which files matter most."
     )
@@ -173,6 +202,8 @@ def _build_instructions(payload: dict[str, Any]) -> str:
 def _build_user_input(payload: dict[str, Any]) -> str:
     report = payload.get("report") or {}
     settings = payload.get("settings") or {}
+    porting = settings.get("porting_settings") or {}
+    context_items = payload.get("context_items") or []
     task = (settings.get("user_task") or "").strip()
     base_task = (
         "Reconstruct a plausible source layout and porting guidance from the reverse-engineering evidence. "
@@ -180,6 +211,15 @@ def _build_user_input(payload: dict[str, Any]) -> str:
     )
     if task:
         base_task += f"\n\nOperator steering:\n{task}"
+    if str(porting.get("target_arch", "")).strip():
+        base_task += (
+            "\n\nArchitecture port request:\n"
+            f"- Source architecture: {str(porting.get('source_arch', '')).strip() or 'infer from binary metadata'}\n"
+            f"- Target architecture: {str(porting.get('target_arch', '')).strip()}\n"
+            f"- Mode: {str(porting.get('mode', 'heuristic')).strip() or 'heuristic'}\n"
+            "- Preserve recovered RTTI/vtable/class/function/source names when creating target-architecture source files.\n"
+            "- Prefer portable C/C++/Rust/JS/TS source equivalents over assembly; isolate unavoidable target-specific code behind named adapters.\n"
+        )
     base_task += (
         "\n\nAnalysis summary:\n"
         f"- Target: {report.get('target')}\n"
@@ -190,6 +230,15 @@ def _build_user_input(payload: dict[str, Any]) -> str:
         f"- Recovered sources: {len(report.get('recovered_sources') or [])}\n"
         f"- Analysis index entities: {sum((report.get('analysis_index_summary') or {}).get('entity_counts', {}).values()) if isinstance(report.get('analysis_index_summary'), dict) else 'unknown'}\n"
     )
+    context_names = {str(item.get("name", "")) for item in context_items}
+    if "naming_hints.json" in context_names:
+        base_task += (
+            "\nNaming constraints:\n"
+            "- Read `naming_hints.json` before writing files.\n"
+            "- Reuse recovered source paths and symbol-derived names wherever possible.\n"
+            "- Reuse recovered class layouts, field names, constructor phases, call edges, and flag names when present.\n"
+            "- Treat generic placeholder filenames as invalid when better names exist.\n"
+        )
     return base_task
 
 
@@ -375,6 +424,7 @@ def _dispatch_tool_call(
     validations: list[dict[str, Any]],
     recompile_root: Path,
     settings: dict[str, Any],
+    naming_hints: dict[str, Any] | None = None,
     logger=None,
 ) -> dict[str, Any]:
     if name == "list_context_items":
@@ -468,6 +518,9 @@ def _dispatch_tool_call(
         relative_path = str(arguments.get("relative_path", "")).strip().replace("\\", "/")
         if not relative_path:
             return {"error": "relative_path is required"}
+        generic_error = _validate_reconstruction_path(relative_path, naming_hints or {})
+        if generic_error:
+            return {"error": generic_error}
         evidence_refs = arguments.get("evidence_refs") or []
         if not isinstance(evidence_refs, list) or not evidence_refs:
             return {"error": "At least one evidence reference is required"}
@@ -537,6 +590,20 @@ def _dispatch_tool_call(
     return {"error": f"Unsupported tool {name}"}
 
 
+def _validate_reconstruction_path(relative_path: str, naming_hints: dict[str, Any]) -> str | None:
+    preferred_paths = [str(value) for value in naming_hints.get("preferred_source_paths") or [] if value]
+    class_names = [str(value) for value in naming_hints.get("class_names") or [] if value]
+    function_names = [str(value) for value in naming_hints.get("function_names") or [] if value]
+    path_lower = relative_path.lower()
+    generic_markers = ("app_approx", "module", "file", "class_", "function_", "recovered")
+    looks_generic = any(marker in path_lower for marker in generic_markers)
+    if not looks_generic:
+        return None
+    if not preferred_paths and not class_names and not function_names:
+        return None
+    return "Use recovered RTTI/symbol/debug names from naming_hints.json instead of a generic placeholder path."
+
+
 def _extract_function_calls(response: Any) -> list[dict[str, str]]:
     calls: list[dict[str, str]] = []
     for item in _get_value(response, "output", []) or []:
@@ -576,6 +643,20 @@ def _find_context_item(items: list[dict[str, Any]], name: str) -> dict[str, Any]
         if item.get("name") == name:
             return item
     return None
+
+
+def _find_context_json(items: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    item = _find_context_item(items, name)
+    if item is None:
+        return {}
+    path = Path(str(item.get("path", "")))
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _json_loads(value: str) -> dict[str, Any]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..symbolic_source import extract_source_file_hints, extract_symbol_names, synthesize_symbolic_source_tree
 from ..symbol_acquisition import acquire_pdbs_from_symbol_servers, download_with_dotnet_symbol
 from ..tooling import resolve_command, run_command
 from ..utils import ensure_dir, safe_slug
@@ -131,11 +132,14 @@ class PDBAnalyzer(Analyzer):
         safe_name = safe_slug(pdb_path.stem)
         summary_path = output_dir / f"{safe_name}.summary.txt"
         publics_path = output_dir / f"{safe_name}.publics.txt"
+        symbols_path = output_dir / f"{safe_name}.symbols.txt"
         summary_command = command + ["dump", "-summary", str(pdb_path)]
         publics_command = command + ["dump", "-publics", "-globals", "-modules", str(pdb_path)]
+        symbols_command = command + ["dump", "-symbols", "-lines", "-modules", str(pdb_path)]
 
         summary_code, summary_stdout, summary_stderr = run_command(summary_command, cwd=pdb_path.parent, timeout=1200)
         publics_code, publics_stdout, publics_stderr = run_command(publics_command, cwd=pdb_path.parent, timeout=1200)
+        symbols_code, symbols_stdout, symbols_stderr = run_command(symbols_command, cwd=pdb_path.parent, timeout=1200)
 
         wrote_any = False
         if summary_code == 0 and summary_stdout.strip():
@@ -151,6 +155,32 @@ class PDBAnalyzer(Analyzer):
             wrote_any = True
         elif publics_stderr.strip():
             report.add_note(f"llvm-pdbutil symbol export failed for {pdb_path.name}: {publics_stderr.strip()}")
+
+        if symbols_code == 0 and symbols_stdout.strip():
+            symbols_path.write_text(symbols_stdout, encoding="utf-8", errors="ignore")
+            report.add_artifact(str(symbols_path), "text", "PDB symbol and line dump from llvm-pdbutil")
+            wrote_any = True
+        elif symbols_stderr.strip():
+            report.add_note(f"llvm-pdbutil symbol/line export failed for {pdb_path.name}: {symbols_stderr.strip()}")
+
+        combined_text = "\n".join(part for part in [summary_stdout, publics_stdout, symbols_stdout] if part)
+        if combined_text.strip():
+            recovered_root = ensure_dir(output_dir / "recovered_src")
+            source_hints = extract_source_file_hints(combined_text)
+            function_names = extract_symbol_names(combined_text)
+            generated = synthesize_symbolic_source_tree(
+                recovered_root,
+                origin_label=f"PDB symbols ({pdb_path.name})",
+                source_paths=source_hints,
+                function_names=function_names,
+            )
+            if generated:
+                report.add_artifact(str(recovered_root), "directory", "Pseudo-source tree synthesized from PDB symbols")
+                for original_path, restored_path in generated:
+                    report.add_recovered_source(original_path, restored_path, "pdb_symbols")
+                report.add_note(
+                    f"Synthesized {len(generated)} pseudo-source file(s) from PDB symbol and source-file evidence."
+                )
 
         if wrote_any:
             context.log(f"PDB export completed for {pdb_path} with llvm-pdbutil")

@@ -12,6 +12,9 @@ from tests import _path_setup  # noqa: F401
 
 from re_pro.analyzers.llm import LLMAssistAnalyzer
 from re_pro.engine import AnalysisContext
+from re_pro.llm_auth import llm_auth_available
+from re_pro.llm_auth import llm_auth_status
+from re_pro.llm_auth import load_codex_oauth_token
 from re_pro.llm_assist import _dispatch_tool_call, run_llm_assist_job
 from re_pro.models import AnalysisReport, LlmAssistSettings
 
@@ -61,6 +64,53 @@ class _FakeClient:
 
 
 class LlmAssistTests(unittest.TestCase):
+    def test_codex_oauth_auth_json_is_detected_without_exposing_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "auth_mode": "chatgpt",
+                        "tokens": {
+                            "access_token": "secret-access-token",
+                            "refresh_token": "secret-refresh-token",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            settings = LlmAssistSettings(auth_provider="codex-oauth", codex_auth_path=str(auth_path))
+
+            token = load_codex_oauth_token(auth_path)
+            status = llm_auth_status(settings)
+
+            self.assertIsNotNone(token)
+            self.assertEqual(token.access_token, "secret-access-token")
+            self.assertTrue(llm_auth_available(settings))
+            self.assertTrue(status["has_codex_oauth_token"])
+            self.assertEqual(status["selected"], "codex-oauth")
+            self.assertNotIn("secret-access-token", json.dumps(status))
+
+    def test_llm_analyzer_context_includes_naming_hints(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "out"
+            target = root / "sample.exe"
+            target.write_bytes(b"MZ")
+            report = AnalysisReport(target=str(target), output_dir=str(output_dir))
+            report.add_recovered_source("src/Foo.cpp", str(output_dir / "native" / "Foo.cpp"), "pdb_symbols")
+            context = AnalysisContext(target=target, output_dir=output_dir)
+            context.analysis_index.add_entity("class", "msvc_rtti:foo", "Foo")
+            context.analysis_index.add_entity("function", "ghidra:0x140001000", "Foo::Bar", attributes={"namespace": "Foo"})
+
+            items = LLMAssistAnalyzer()._build_context_items(context, report, output_dir / "llm")
+            naming_item = next(item for item in items if item["name"] == "naming_hints.json")
+            payload = json.loads(Path(naming_item["path"]).read_text(encoding="utf-8"))
+
+            self.assertIn("src/Foo.cpp", payload["preferred_source_paths"])
+            self.assertIn("Foo", payload["class_names"])
+            self.assertIn("Foo::Bar", payload["function_names"])
+
     def test_run_llm_assist_job_writes_reconstructed_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -87,12 +137,18 @@ class LlmAssistTests(unittest.TestCase):
                                 "name": "context",
                                 "path": str(context_file),
                                 "summary": "test",
-                            }
+                            },
+                            {
+                                "name": "naming_hints.json",
+                                "path": str(root / "naming_hints.json"),
+                                "summary": "naming hints",
+                            },
                         ],
                     }
                 ),
                 encoding="utf-8",
             )
+            (root / "naming_hints.json").write_text(json.dumps({}), encoding="utf-8")
 
             result = run_llm_assist_job(request_path, client_factory=_FakeClient)
 
@@ -135,6 +191,39 @@ class LlmAssistTests(unittest.TestCase):
             self.assertTrue(any("LLM reconstruction completed" == finding.title for finding in report.findings))
             self.assertTrue((output_dir / "llm_assist" / "request.json").exists())
 
+    def test_llm_analyzer_accepts_codex_oauth_auth_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "out"
+            target = root / "sample.exe"
+            auth_path = root / "auth.json"
+            target.write_bytes(b"MZ")
+            auth_path.write_text(json.dumps({"auth_mode": "chatgpt", "tokens": {"access_token": "codex-token"}}), encoding="utf-8")
+            report = AnalysisReport(target=str(target), output_dir=str(output_dir), target_type="portable-executable")
+            context = AnalysisContext(
+                target=target,
+                output_dir=output_dir,
+                probable_binary=True,
+                llm_settings=LlmAssistSettings(
+                    enabled=True,
+                    model="gpt-5.5",
+                    auth_provider="codex-oauth",
+                    codex_auth_path=str(auth_path),
+                    reasoning_effort="xhigh",
+                    background=False,
+                ),
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("re_pro.analyzers.llm.run_llm_assist_job", return_value={"written_files": []}):
+                    LLMAssistAnalyzer().analyze(context, report)
+
+            request = json.loads((output_dir / "llm_assist" / "request.json").read_text(encoding="utf-8"))
+            self.assertEqual(request["settings"]["model"], "gpt-5.5")
+            self.assertEqual(request["settings"]["auth_provider"], "codex-oauth")
+            self.assertEqual(request["settings"]["codex_auth_path"], str(auth_path))
+            self.assertEqual(request["settings"]["reasoning_effort"], "xhigh")
+
     def test_index_tools_expose_entities_and_relations(self) -> None:
         analysis_index = {
             "entities": [
@@ -172,6 +261,27 @@ class LlmAssistTests(unittest.TestCase):
         self.assertEqual(search_result["matches"][0]["label"], "Success")
         self.assertEqual(entity_result["entity"]["label"], "entry")
         self.assertEqual(entity_result["relations"][0]["predicate"], "references")
+
+    def test_write_reconstruction_file_rejects_generic_path_when_naming_hints_exist(self) -> None:
+        result = _dispatch_tool_call(
+            "write_reconstruction_file",
+            {
+                "relative_path": "src/app_approx.ts",
+                "content": "export const x = 1;\n",
+                "confidence": 0.8,
+                "evidence_refs": ["context"],
+            },
+            context_items=[{"name": "context", "path": __file__, "summary": "test"}],
+            analysis_index={},
+            reconstructed_root=Path.cwd(),
+            writes=[],
+            validations=[],
+            recompile_root=Path.cwd(),
+            settings={},
+            naming_hints={"preferred_source_paths": ["src/Foo.cpp"], "class_names": ["Foo"], "function_names": ["Foo::Bar"]},
+        )
+
+        self.assertIn("naming_hints", result["error"])
 
 
 if __name__ == "__main__":

@@ -7,10 +7,30 @@ from pathlib import Path
 
 from tests import _path_setup  # noqa: F401
 
+from re_pro.mcp_launch import build_mcp_launch_details
 from re_pro.mcp_server import build_mcp_server
 
 
 class McpServerTests(unittest.TestCase):
+    def test_mcp_launch_details_include_exact_client_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            details = build_mcp_launch_details(
+                workspace_root=root,
+                output_root=root / "out",
+                tools_root=root / "tools",
+                transport="streamable-http",
+                host="127.0.0.1",
+                port=8123,
+            )
+
+            self.assertEqual(details["url"], "http://127.0.0.1:8123/mcp")
+            self.assertEqual(
+                details["client_config"],
+                {"mcpServers": {"re-pro": {"url": "http://127.0.0.1:8123/mcp", "transport": "streamable-http"}}},
+            )
+            self.assertIn("mcp-server", details["command"])
+
     def test_mcp_server_exposes_tools_resources_and_prompts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -32,6 +52,7 @@ class McpServerTests(unittest.TestCase):
             self.assertIn("approximate_source_with_sampling", tool_names)
             self.assertIn("compare_analysis_runs", tool_names)
             self.assertIn("create_patch_bundle_from_runs", tool_names)
+            self.assertIn("prepare_architecture_port", tool_names)
             self.assertIn("run_packaging_action", tool_names)
             self.assertIn("repro://capabilities", resource_uris)
             self.assertIn("repro://roadmap", resource_uris)
@@ -46,11 +67,20 @@ class McpServerTests(unittest.TestCase):
             roadmap.write_text("# Roadmap\n\n- Example item\n", encoding="utf-8")
             server = build_mcp_server(workspace_root=root, output_root=root / "out", tools_root=root / "tools")
 
-            async def _run() -> tuple[dict, dict, dict, dict, dict, str, str]:
+            async def _run() -> tuple[dict, dict, dict, dict, dict, dict, str, str]:
                 _, analyzed = await server.call_tool("analyze_target", {"target": str(target)})
                 _, runs = await server.call_tool("list_analysis_runs", {})
                 _, report = await server.call_tool("read_report", {"run_output_dir": analyzed["output_dir"]})
                 _, workspace = await server.call_tool("prepare_recompile_workspace", {"run_output_dir": analyzed["output_dir"]})
+                _, arch_port = await server.call_tool(
+                    "prepare_architecture_port",
+                    {
+                        "run_output_dir": analyzed["output_dir"],
+                        "source_arch": "x86_64",
+                        "target_arch": "arm64",
+                        "mode": "heuristic",
+                    },
+                )
                 _, written = await server.call_tool(
                     "write_reconstruction_file",
                     {
@@ -79,13 +109,14 @@ class McpServerTests(unittest.TestCase):
                     getattr(getattr(message, "content", None), "text", "")
                     for message in getattr(prompt, "messages", [])
                 )
-                return analyzed, runs, report, workspace, validated, resource_text, prompt_text
+                return analyzed, runs, report, workspace, arch_port, validated, resource_text, prompt_text
 
-            analyzed, runs, report, workspace, validated, resource_text, prompt_text = asyncio.run(_run())
+            analyzed, runs, report, workspace, arch_port, validated, resource_text, prompt_text = asyncio.run(_run())
 
             self.assertEqual(report["target"], str(target.resolve()))
             self.assertEqual(runs["runs"][0]["output_dir"], analyzed["output_dir"])
             self.assertTrue(Path(workspace["workspace_root"]).exists())
+            self.assertTrue(arch_port["architecture_ports"])
             self.assertTrue(validated["ok"])
             self.assertIn("Example item", resource_text)
             self.assertIn("Focus on the main app shell", prompt_text)

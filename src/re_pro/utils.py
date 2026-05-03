@@ -69,6 +69,14 @@ def parse_pe_metadata(path: Path) -> dict[str, object] | None:
     if optional_header_offset + 2 > len(header):
         return None
     optional_magic = struct.unpack_from("<H", header, optional_header_offset)[0]
+    address_of_entry_point = 0
+    image_base = 0
+    if optional_magic == 0x20B and optional_header_offset + 32 <= len(header):
+        address_of_entry_point = struct.unpack_from("<I", header, optional_header_offset + 16)[0]
+        image_base = struct.unpack_from("<Q", header, optional_header_offset + 24)[0]
+    elif optional_magic == 0x10B and optional_header_offset + 32 <= len(header):
+        address_of_entry_point = struct.unpack_from("<I", header, optional_header_offset + 16)[0]
+        image_base = struct.unpack_from("<I", header, optional_header_offset + 28)[0]
     section_table_offset = optional_header_offset + optional_header_size
     sections: list[str] = []
     for index in range(number_of_sections):
@@ -95,6 +103,8 @@ def parse_pe_metadata(path: Path) -> dict[str, object] | None:
         "timestamp": timestamp,
         "characteristics": hex(characteristics),
         "optional_magic": optional_magic_map.get(optional_magic, hex(optional_magic)),
+        "entry_point": address_of_entry_point,
+        "image_base": image_base,
         "sections": sections,
         "number_of_sections": number_of_sections,
     }
@@ -127,6 +137,14 @@ def parse_pe_sections(path: Path) -> list[dict[str, int | str]]:
         raw_name = header[section_offset : section_offset + 8]
         name = raw_name.split(b"\x00", 1)[0].decode("ascii", errors="ignore")
         virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from("<IIII", header, section_offset + 8)
+        characteristics = struct.unpack_from("<I", header, section_offset + 36)[0]
+        flags = []
+        if characteristics & 0x20000000:
+            flags.append("EXECUTE")
+        if characteristics & 0x40000000:
+            flags.append("READ")
+        if characteristics & 0x80000000:
+            flags.append("WRITE")
         sections.append(
             {
                 "name": name,
@@ -134,12 +152,14 @@ def parse_pe_sections(path: Path) -> list[dict[str, int | str]]:
                 "virtual_address": virtual_address,
                 "raw_size": raw_size,
                 "raw_offset": raw_offset,
+                "characteristics": characteristics,
+                "flag_names": flags,
             }
         )
     return sections
 
 
-def _rva_to_offset(rva: int, sections: list[dict[str, int | str]]) -> int | None:
+def pe_rva_to_offset(rva: int, sections: list[dict[str, int | str]]) -> int | None:
     for section in sections:
         virtual_address = int(section["virtual_address"])
         span = max(int(section["virtual_size"]), int(section["raw_size"]))
@@ -147,6 +167,20 @@ def _rva_to_offset(rva: int, sections: list[dict[str, int | str]]) -> int | None
         if virtual_address <= rva < virtual_address + span:
             return raw_offset + (rva - virtual_address)
     return None
+
+
+def pe_offset_to_rva(offset: int, sections: list[dict[str, int | str]]) -> int | None:
+    for section in sections:
+        raw_offset = int(section["raw_offset"])
+        raw_size = int(section["raw_size"])
+        virtual_address = int(section["virtual_address"])
+        if raw_offset <= offset < raw_offset + raw_size:
+            return virtual_address + (offset - raw_offset)
+    return None
+
+
+def _rva_to_offset(rva: int, sections: list[dict[str, int | str]]) -> int | None:
+    return pe_rva_to_offset(rva, sections)
 
 
 def parse_pe_imports(path: Path) -> list[str]:

@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+from ..frontend_reconstruct import reconstruct_bundled_frontend_assets
 from ..tauri_extract import extract_tauri_assets
 from ..utils import ensure_dir
 from .base import Analyzer
@@ -173,6 +174,38 @@ class TauriAnalyzer(Analyzer):
                 source_map=recovered["source_map"],
             )
         report.notes.extend(extracted["notes"])
+
+        if extracted_count and not restored_total:
+            reconstructed = reconstruct_bundled_frontend_assets(
+                Path(str(extracted["assets_dir"])),
+                Path(str(extracted["manifest_path"])),
+                ensure_dir(context.output_dir / "recovered_sources"),
+                llm_settings=getattr(context, "llm_settings", None),
+            )
+            reconstructed_count = int(reconstructed.get("recovered_count") or 0)
+            if reconstructed_count:
+                report.add_artifact(
+                    str(reconstructed["source_root"]),
+                    "directory",
+                    "Reconstituted Tauri frontend bundled sources",
+                )
+                report.add_artifact(
+                    str(reconstructed["manifest_path"]),
+                    "manifest",
+                    "Tauri bundled source reconstruction manifest",
+                )
+                report.add_finding(
+                    "Bundled frontend source approximation generated",
+                    f"Reconstituted {reconstructed_count} bundled frontend text asset(s) because no Tauri source maps were present.",
+                    severity="info",
+                )
+                for recovered in reconstructed.get("recovered_sources") or []:
+                    report.add_recovered_source(
+                        original_path=str(recovered["original_path"]),
+                        restored_path=str(recovered["restored_path"]),
+                        source_map=str(recovered["source_map"]),
+                    )
+            report.notes.extend(str(note) for note in reconstructed.get("notes") or [])
 
     @staticmethod
     def _infer_frontend(asset_paths: list[str], ascii_strings: list[str]) -> str | None:

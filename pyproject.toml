@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
   "Brotli>=1.1",
   "capstone>=5.0",
+  "cryptography>=42",
   "mcp>=1.27,<2",
   "openai>=1.0",
   "PyQt5>=5.15",
@@ -26,3 +27,15 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+  ".git",
+  ".venv",
+  "analysis_output",
+  "oc_analysis_output",
+  "profiles",
+  "samples",
+  "tools",
+]

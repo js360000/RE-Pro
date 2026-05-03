@@ -12,12 +12,21 @@ venv/
 build/
 dist/
 *.egg-info/
+samples/fixtures/*/build/
 
 # Local tools and helper builds
-tools/
+tools/*
+!tools/frontend-ast/
+tools/frontend-ast/*
+!tools/frontend-ast/repro_frontend_ast.mjs
+!tools/frontend-ast/package.json
+!tools/frontend-ast/package-lock.json
+tools/frontend-ast/node_modules/
+tools/npm-cache/
 
 # Analysis outputs
 analysis_output/
+profiles/
 opencode_7z_extract/
 sample_analysis*/
 samples_analysis*/
@@ -37,3 +46,6 @@ tmp_*/
 # OS / editor noise
 .DS_Store
 Thumbs.db
+
+# Local downloaded installers
+kiro-ide-*.exe

@@ -1,5 +1,6 @@
 from .android import AndroidAnalyzer
 from .apple import AppleAnalyzer
+from .console import ConsoleFormatAnalyzer
 from .dotnet import DotNetAnalyzer
 from .electron import ElectronAnalyzer
 from .external_tools import ExternalToolAnalyzer
@@ -7,6 +8,7 @@ from .game import GameNativeAnalyzer
 from .installer import InstallerAnalyzer
 from .linux_package import LinuxPackageAnalyzer
 from .java import JavaPackageAnalyzer
+from .live_process import LiveProcessAnalyzer
 from .llm import LLMAssistAnalyzer
 from .native import NativeLanguageAnalyzer
 from .pdb import PDBAnalyzer
@@ -33,7 +35,9 @@ BUILTIN_ANALYZER_CLASSES = [
     PythonPackagedAnalyzer,
     NativeLanguageAnalyzer,
     GameNativeAnalyzer,
+    ConsoleFormatAnalyzer,
     WasmAnalyzer,
+    LiveProcessAnalyzer,
     ExternalToolAnalyzer,
     RuntimeTraceAnalyzer,
     LLMAssistAnalyzer,
@@ -49,6 +53,7 @@ __all__ = [
     "AndroidAnalyzer",
     "AppleAnalyzer",
     "BUILTIN_ANALYZER_CLASSES",
+    "ConsoleFormatAnalyzer",
     "DotNetAnalyzer",
     "ElectronAnalyzer",
     "ExternalToolAnalyzer",
@@ -56,6 +61,7 @@ __all__ = [
     "InstallerAnalyzer",
     "LinuxPackageAnalyzer",
     "JavaPackageAnalyzer",
+    "LiveProcessAnalyzer",
     "LLMAssistAnalyzer",
     "NativeLanguageAnalyzer",
     "PDBAnalyzer",

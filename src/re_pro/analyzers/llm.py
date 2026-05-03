@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ..llm_auth import llm_auth_available
+from ..llm_auth import llm_auth_missing_message
 from ..llm_assist import run_llm_assist_job
 from ..tooling import REPO_ROOT
 from ..utils import ensure_dir, safe_slug
@@ -23,8 +25,8 @@ class LLMAssistAnalyzer(Analyzer):
             return
         if not self._should_run(settings, report):
             return
-        if not os.environ.get("OPENAI_API_KEY"):
-            report.add_note("LLM-assisted reconstruction was requested, but OPENAI_API_KEY is not set.")
+        if not llm_auth_available(settings):
+            report.add_note(llm_auth_missing_message(settings))
             return
 
         llm_dir = ensure_dir(context.output_dir / "llm_assist")
@@ -38,6 +40,8 @@ class LLMAssistAnalyzer(Analyzer):
             "reconstructed_root": str(reconstructed_root),
             "settings": {
                 "model": settings.model,
+                "auth_provider": settings.auth_provider,
+                "codex_auth_path": settings.codex_auth_path,
                 "reasoning_effort": settings.reasoning_effort,
                 "verbosity": settings.verbosity,
                 "background": settings.background,
@@ -45,6 +49,7 @@ class LLMAssistAnalyzer(Analyzer):
                 "user_task": settings.user_task,
                 "allow_dependency_installs": settings.allow_dependency_installs,
                 "run_recompile_checks": settings.run_recompile_checks,
+                "porting_settings": context.porting_settings.to_dict(),
             },
             "report": report.to_dict(),
             "analysis_index": context.analysis_index.to_dict(),
@@ -70,7 +75,7 @@ class LLMAssistAnalyzer(Analyzer):
             )
             report.add_finding(
                 "LLM reconstruction job started",
-                "GPT-5.4 reconstruction was queued in a detached background job. Monitor the status and summary artifacts for completion.",
+                f"{settings.model} reconstruction was queued in a detached background job. Monitor the status and summary artifacts for completion.",
                 severity="info",
             )
             report.add_note(f"LLM reconstruction is running in the background. Status: {status_path}")
@@ -80,7 +85,7 @@ class LLMAssistAnalyzer(Analyzer):
         report.add_artifact(str(summary_path), "report", "LLM reconstruction summary")
         report.add_finding(
             "LLM reconstruction completed",
-            f"GPT-5.4 wrote {len(result.get('written_files') or [])} reconstructed file(s).",
+            f"{settings.model} wrote {len(result.get('written_files') or [])} reconstructed file(s).",
             severity="info",
         )
         report.add_note(f"LLM reconstruction summary written to {summary_path}.")
@@ -145,6 +150,11 @@ class LLMAssistAnalyzer(Analyzer):
             json.dumps(context.analysis_index.to_dict(), indent=2),
             "Unified analysis index snapshot with normalized entities and relations collected so far.",
         )
+        add_item(
+            "naming_hints.json",
+            json.dumps(self._build_naming_hints(context, report), indent=2),
+            "Preferred filenames, classes, functions, and namespaces inferred from RTTI, symbols, recovered sources, and debug metadata.",
+        )
         if context.ascii_strings:
             add_item(
                 "ascii_strings_sample.txt",
@@ -175,6 +185,83 @@ class LLMAssistAnalyzer(Analyzer):
         index_path = llm_dir / "context_index.json"
         index_path.write_text(json.dumps(items, indent=2), encoding="utf-8")
         return items
+
+    @staticmethod
+    def _build_naming_hints(context, report) -> dict[str, object]:
+        analysis_index = context.analysis_index.to_dict()
+        hints: dict[str, object] = {
+            "preferred_source_paths": [],
+            "class_names": [],
+            "function_names": [],
+            "field_names": [],
+            "class_layouts": [],
+            "recovery_capabilities": [],
+            "namespaces": [],
+            "debug_references": [],
+        }
+        preferred_source_paths: list[str] = []
+        class_names: list[str] = []
+        function_names: list[str] = []
+        field_names: list[str] = []
+        class_layouts: list[dict[str, object]] = []
+        recovery_capabilities: list[str] = []
+        namespaces: list[str] = []
+        debug_references: list[str] = []
+
+        for source in report.recovered_sources[:256]:
+            original_path = str(source.original_path or "").replace("\\", "/").strip()
+            if original_path and original_path not in preferred_source_paths:
+                preferred_source_paths.append(original_path)
+
+        for entity in analysis_index.get("entities") or []:
+            kind = str(entity.get("kind", "")).strip().lower()
+            label = str(entity.get("label", "")).strip()
+            attributes = entity.get("attributes") or {}
+            if kind == "class" and label and label not in class_names:
+                class_names.append(label)
+                layout = {
+                    "class_name": label,
+                    "estimated_object_size": attributes.get("estimated_object_size"),
+                    "subobjects": attributes.get("subobjects"),
+                    "constructor_phases": attributes.get("constructor_phases"),
+                    "field_count": len([
+                        entity
+                        for entity in analysis_index.get("entities") or []
+                        if str(entity.get("kind", "")).lower() == "field"
+                        and str((entity.get("attributes") or {}).get("class_name") or "") == label
+                    ]),
+                    "symbol_recovery": attributes.get("symbol_recovery"),
+                }
+                if any(value for value in layout.values()):
+                    class_layouts.append(layout)
+                for capability in attributes.get("recovery_capabilities") or []:
+                    capability_text = str(capability or "").strip()
+                    if capability_text and capability_text not in recovery_capabilities:
+                        recovery_capabilities.append(capability_text)
+                if "::" in label:
+                    namespace = "::".join(label.split("::")[:-1]).strip(":")
+                    if namespace and namespace not in namespaces:
+                        namespaces.append(namespace)
+            elif kind == "function" and label and label not in function_names:
+                if "::" in label or not label.lower().startswith(("sub_", "fcn.", "vf_")):
+                    function_names.append(label)
+                namespace = str(attributes.get("namespace", "")).strip()
+                if namespace and namespace not in namespaces:
+                    namespaces.append(namespace)
+            elif kind == "field" and label and label not in field_names:
+                field_names.append(label)
+            elif kind == "debug_reference" and label and label not in debug_references:
+                debug_references.append(label.replace("\\", "/"))
+
+        hints["preferred_source_paths"] = preferred_source_paths[:256]
+        hints["class_names"] = class_names[:256]
+        hints["function_names"] = function_names[:512]
+        hints["field_names"] = field_names[:512]
+        hints["class_layouts"] = class_layouts[:128]
+        hints["recovery_capabilities"] = recovery_capabilities[:64]
+        hints["namespaces"] = namespaces[:128]
+        hints["debug_references"] = debug_references[:128]
+        return hints
 
     @staticmethod
     def _spawn_background_job(request_path: Path, context) -> None:

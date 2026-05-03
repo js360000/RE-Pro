@@ -74,6 +74,38 @@ COMMON_WINDOWS_PATTERNS: dict[str, list[str]] = {
     "dotnet-symbol": [
         str(Path.home() / ".dotnet" / "tools" / "dotnet-symbol.exe"),
     ],
+    "asar": [
+        str(Path.home() / "AppData" / "Roaming" / "npm" / "asar.cmd"),
+        str(Path.home() / "AppData" / "Roaming" / "npm" / "asar.ps1"),
+    ],
+    "unfself": [
+        r"C:\Program Files\ps3tools\unfself.exe",
+        r"C:\Program Files (x86)\ps3tools\unfself.exe",
+    ],
+    "scetool": [
+        r"C:\Program Files\ps3tools\scetool.exe",
+        r"C:\Program Files (x86)\ps3tools\scetool.exe",
+    ],
+    "pkg2zip": [
+        r"C:\Program Files\pkg2zip\pkg2zip.exe",
+        r"C:\Program Files (x86)\pkg2zip\pkg2zip.exe",
+    ],
+    "pkg_dec": [
+        r"C:\Program Files\ps3tools\pkg_dec.exe",
+        r"C:\Program Files (x86)\ps3tools\pkg_dec.exe",
+    ],
+    "pkgrip": [
+        r"C:\Program Files\ps3tools\pkgrip.exe",
+        r"C:\Program Files (x86)\ps3tools\pkgrip.exe",
+    ],
+    "pspdecrypt": [
+        r"C:\Program Files\pspdecrypt\pspdecrypt.exe",
+        r"C:\Program Files (x86)\pspdecrypt\pspdecrypt.exe",
+    ],
+    "psp-packer": [
+        r"C:\Program Files\psp-packer\psp-packer.exe",
+        r"C:\Program Files (x86)\psp-packer\psp-packer.exe",
+    ],
 }
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -168,9 +200,70 @@ LOCAL_TOOL_GLOBS: dict[str, list[str]] = {
         "dotnet-symbol/dotnet-symbol.exe",
         "dotnet-symbol*/dotnet-symbol.exe",
     ],
+    "asar": [
+        "asar/node_modules/.bin/asar.cmd",
+        "asar/node_modules/.bin/asar.ps1",
+        "asar/node_modules/@electron/asar/bin/asar.js",
+        "node_modules/.bin/asar.cmd",
+        "node_modules/.bin/asar.ps1",
+    ],
+    "asar.cmd": [
+        "asar/node_modules/.bin/asar.cmd",
+        "node_modules/.bin/asar.cmd",
+    ],
+    "asar.ps1": [
+        "asar/node_modules/.bin/asar.ps1",
+        "node_modules/.bin/asar.ps1",
+    ],
     "python-arm64": [
         "python-arm64/python.exe",
         "python-arm64*/python.exe",
+    ],
+    "unfself": [
+        "ps3tools*/unfself.exe",
+        "ps3tools*/bin/unfself.exe",
+        "unfself*/unfself.exe",
+        "unfself.exe",
+        "unfself",
+    ],
+    "scetool": [
+        "ps3tools*/scetool.exe",
+        "ps3tools*/bin/scetool.exe",
+        "scetool*/scetool.exe",
+        "scetool.exe",
+        "scetool",
+    ],
+    "pkg2zip": [
+        "pkg2zip*/pkg2zip.exe",
+        "pkg2zip*/bin/pkg2zip.exe",
+        "pkg2zip.exe",
+        "pkg2zip",
+    ],
+    "pkg_dec": [
+        "ps3tools*/pkg_dec.exe",
+        "ps3tools*/bin/pkg_dec.exe",
+        "pkg_dec*/pkg_dec.exe",
+        "pkg_dec.exe",
+        "pkg_dec",
+    ],
+    "pkgrip": [
+        "pkgrip*/pkgrip.exe",
+        "pkgrip*/bin/pkgrip.exe",
+        "pkgrip.exe",
+        "pkgrip",
+    ],
+    "pspdecrypt": [
+        "pspdecrypt*/pspdecrypt.exe",
+        "pspdecrypt*/bin/pspdecrypt.exe",
+        "pspdecrypt.exe",
+        "pspdecrypt",
+    ],
+    "psp-packer": [
+        "psp-packer/bin/psp-packer.exe",
+        "psp-packer*/bin/psp-packer.exe",
+        "psp-packer*/psp-packer.exe",
+        "psp-packer.exe",
+        "psp-packer",
     ],
 }
 

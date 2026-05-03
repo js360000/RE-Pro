@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+from ..ddl import (
+    index_ddl_results,
+    looks_like_ddl,
+    parse_ddl_from_file,
+    write_ddl_manifest,
+    write_ddl_struct_sources,
+)
 from ..gdeflate import NVCOMP_PYTHON_PACKAGE, nvcomp_available, try_decompress_file
 from ..utils import ensure_dir
 from .base import Analyzer
@@ -91,6 +99,8 @@ class GameNativeAnalyzer(Analyzer):
     GDEFLATE_NAME_MARKERS = ("gdeflate", ".gdf")
     GDEFLATE_SCAN_DIRS = ("data", "assets", "content", "pak", "paks")
     MAX_GDEFLATE_CANDIDATES = 16
+    DDL_SCAN_DIRS = ("data", "assets", "content", "pak", "paks", "schema", "schemas", "ddl", "config")
+    MAX_DDL_CANDIDATES = 64
 
     def analyze(self, context, report) -> None:
         if not context.target.is_file() or (not context.probable_binary and context.pe_metadata is None):
@@ -126,7 +136,8 @@ class GameNativeAnalyzer(Analyzer):
             )
             report.add_note(f"Detected game/UI stack markers: {summary}.")
 
-        self._attempt_gdeflate_recovery(context, report, stack_hits, middleware_hits)
+        decompressed_assets = self._attempt_gdeflate_recovery(context, report, stack_hits, middleware_hits)
+        self._attempt_ddl_recovery(context, report, decompressed_assets)
 
     @staticmethod
     def _matches(
@@ -140,12 +151,12 @@ class GameNativeAnalyzer(Analyzer):
         string_hits = any(marker in value for value in strings_lower for marker in signature.get("strings", ()))
         return import_hits or sibling_hits or string_hits
 
-    def _attempt_gdeflate_recovery(self, context, report, stack_hits: list[str], middleware_hits: list[str]) -> None:
+    def _attempt_gdeflate_recovery(self, context, report, stack_hits: list[str], middleware_hits: list[str]) -> list[Path]:
         candidates = self._find_gdeflate_candidates(context.target.parent)
         if not candidates:
             if "NVIDIA GDeflate" in middleware_hits or "DirectStorage" in stack_hits:
                 report.add_note("DirectStorage or GDeflate markers were detected, but no nearby GDeflate-named asset files were found to probe.")
-            return
+            return []
 
         report.add_note(f"Found {len(candidates)} nearby GDeflate candidate files for extraction probes.")
         available, version = nvcomp_available()
@@ -154,16 +165,18 @@ class GameNativeAnalyzer(Analyzer):
                 "Install the NVIDIA nvCOMP Python package "
                 f"(`pip install {NVCOMP_PYTHON_PACKAGE}`) on a CUDA-capable system to enable automatic GDeflate extraction."
             )
-            return
+            return []
 
         output_dir = ensure_dir(context.output_dir / "gdeflate")
         success_count = 0
+        decompressed_assets: list[Path] = []
         for candidate in candidates:
             relative_name = candidate.relative_to(context.target.parent)
             destination = output_dir / relative_name.parent / f"{relative_name.name}.decompressed.bin"
             success, message = try_decompress_file(candidate, destination)
             if success and destination.exists():
                 success_count += 1
+                decompressed_assets.append(destination)
                 report.add_artifact(str(destination), "binary", f"GDeflate-decompressed asset from {candidate.name}")
                 context.log(f"GDeflate decoded {candidate} to {destination}")
             else:
@@ -177,6 +190,65 @@ class GameNativeAnalyzer(Analyzer):
                 details=f"Recovered {success_count} assets with nvCOMP {version}.",
             )
             report.add_framework("NVIDIA GDeflate")
+        return decompressed_assets
+
+    def _attempt_ddl_recovery(self, context, report, extra_candidates: list[Path] | None = None) -> None:
+        candidates = self._find_ddl_candidates(context.target.parent)
+        seen = {candidate.resolve() for candidate in candidates if candidate.exists()}
+        for candidate in extra_candidates or []:
+            if candidate.exists() and candidate.resolve() not in seen:
+                candidates.append(candidate)
+                seen.add(candidate.resolve())
+        if not candidates:
+            return
+
+        parsed_results: list[dict[str, object]] = []
+        generated_sources: list[Path] = []
+        source_dir = ensure_dir(context.output_dir / "ddl" / "recovered_structs")
+        for candidate in candidates:
+            parsed = parse_ddl_from_file(candidate)
+            if not parsed.get("ok"):
+                continue
+            parsed_results.append(parsed)
+            prefix = candidate.stem if candidate.parent != context.output_dir else ""
+            generated_sources.extend(write_ddl_struct_sources(parsed, source_dir, prefix=prefix))
+
+        if not parsed_results:
+            return
+
+        manifest_path = write_ddl_manifest(parsed_results, context.output_dir / "ddl" / "ddl_structs.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        summary = manifest.get("summary") or {}
+        report.add_framework("Game DDL schemas")
+        report.add_artifact(str(manifest_path), "manifest", "Recovered game DDL struct manifest")
+        if generated_sources:
+            report.add_artifact(str(source_dir), "source", "Recovered game DDL struct pseudo-source")
+            for source_path in generated_sources:
+                report.add_recovered_source(
+                    f"ddl/{source_path.name}",
+                    str(source_path),
+                    str(manifest_path),
+                )
+        report.add_finding(
+            "Game DDL structs recovered",
+            "The analysis recovered game data-definition structs from sidecar assets or GDeflate-expanded payloads.",
+            severity="info",
+            details=(
+                f"sources={summary.get('source_count', len(parsed_results))}; "
+                f"structs={summary.get('struct_count', 0)}; "
+                f"fields={summary.get('field_count', 0)}; "
+                f"enums={summary.get('enum_count', 0)}"
+            ),
+        )
+        report.add_note(
+            "Recovered DDL schemas were rendered as pseudo C++ headers so class/data layouts can feed porting and source reconstruction."
+        )
+        index_ddl_results(
+            context.analysis_index,
+            target_path=str(context.target),
+            manifest_path=manifest_path,
+            results=parsed_results,
+        )
 
     def _find_gdeflate_candidates(self, root: Path) -> list[Path]:
         candidates: list[Path] = []
@@ -208,3 +280,35 @@ class GameNativeAnalyzer(Analyzer):
         name = candidate.name.lower()
         suffix = candidate.suffix.lower()
         return suffix in self.GDEFLATE_SUFFIXES or any(marker in name for marker in self.GDEFLATE_NAME_MARKERS)
+
+    def _find_ddl_candidates(self, root: Path) -> list[Path]:
+        candidates: list[Path] = []
+        seen: set[Path] = set()
+        if root.exists():
+            for candidate in root.iterdir():
+                if len(candidates) >= self.MAX_DDL_CANDIDATES:
+                    return candidates
+                if candidate.is_file() and self._is_ddl_candidate(candidate):
+                    candidates.append(candidate)
+                    seen.add(candidate)
+        for subdir in self.DDL_SCAN_DIRS:
+            base = root / subdir
+            if not base.exists() or not base.is_dir():
+                continue
+            for candidate in base.rglob("*"):
+                if len(candidates) >= self.MAX_DDL_CANDIDATES:
+                    return candidates
+                if not candidate.is_file() or candidate in seen:
+                    continue
+                if self._is_ddl_candidate(candidate):
+                    candidates.append(candidate)
+                    seen.add(candidate)
+        return candidates
+
+    @staticmethod
+    def _is_ddl_candidate(candidate: Path) -> bool:
+        try:
+            head = candidate.read_bytes()[:512_000]
+        except OSError:
+            return False
+        return looks_like_ddl(candidate, head)

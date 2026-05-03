@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 
 from ..elf import elf_virtual_address_to_offset
+from ..msvc_pseudo_cpp import class_output_paths, render_class_header, render_class_source, write_pseudo_class_sources
+from ..msvc_rtti import recover_msvc_rtti
+from ..symbolic_source import synthesize_symbolic_source_tree
 from ..tooling import resolve_command, run_command
 from ..utils import ensure_dir
 from .base import Analyzer
@@ -179,6 +182,13 @@ class NativeLanguageAnalyzer(Analyzer):
             report.add_framework("Native Windows application")
             detected_native = True
 
+        if context.pe_metadata is not None:
+            rtti_recovery = self._recover_msvc_rtti(context, report)
+            if rtti_recovery:
+                report.add_framework("MSVC RTTI")
+                report.add_framework("Native C/C++ application")
+                detected_native = True
+
         if not detected_native:
             return
 
@@ -188,6 +198,63 @@ class NativeLanguageAnalyzer(Analyzer):
         self._attempt_symbol_dump(context, report)
         self._attempt_capstone_disassembly(context, report)
         self._attempt_disassembly(context, report)
+
+    @staticmethod
+    def _recover_msvc_rtti(context, report) -> dict[str, object] | None:
+        recovered = recover_msvc_rtti(context.target, context.pe_metadata, context.pe_sections)
+        if not recovered:
+            return None
+
+        output_dir = ensure_dir(context.output_dir / "native")
+        manifest_path = output_dir / "msvc_rtti_classes.json"
+        manifest_path.write_text(json.dumps(recovered, indent=2), encoding="utf-8")
+        report.add_artifact(str(manifest_path), "json", "MSVC RTTI class manifest")
+
+        classes_dir = ensure_dir(output_dir / "pseudo_cpp")
+        generated = NativeLanguageAnalyzer._write_pseudo_class_sources(classes_dir, recovered)
+        if generated:
+            report.add_artifact(str(classes_dir), "directory", "Pseudo-C++ classes recovered from MSVC RTTI")
+            for original_path, restored_path in generated:
+                report.add_recovered_source(original_path, restored_path, "msvc_rtti")
+
+        class_count = int(recovered.get("class_count", 0) or 0)
+        vtable_count = int(recovered.get("vtable_count", 0) or 0)
+        method_count = sum(len(entry.get("methods", [])) for entry in recovered.get("classes", []))
+        report.add_finding(
+            "MSVC RTTI classes recovered",
+            "RE-Pro reconstructed class, vtable, and virtual-method candidates from MSVC RTTI data embedded in the PE image.",
+            severity="info",
+            details=f"classes={class_count}; vtables={vtable_count}; methods={method_count}",
+        )
+        report.add_note(
+            f"MSVC RTTI recovery found {class_count} class candidate(s), {vtable_count} vtable(s), and {method_count} virtual method address(es)."
+        )
+        if generated:
+            report.add_note("RE-Pro synthesized pseudo-C++ headers and source stubs from recovered RTTI/vtable metadata.")
+        return recovered
+
+    @staticmethod
+    def _write_pseudo_class_sources(output_dir: Path, recovered: dict[str, object]) -> list[tuple[str, str]]:
+        return write_pseudo_class_sources(output_dir, recovered)
+
+    @staticmethod
+    def _class_output_paths(output_dir: Path, class_name: str) -> tuple[Path, Path]:
+        return class_output_paths(output_dir, class_name)
+
+    @staticmethod
+    def _render_class_header(class_entry: dict[str, object]) -> str:
+        return render_class_header(class_entry)
+
+    @staticmethod
+    def _render_class_source(class_entry: dict[str, object], header_name: str) -> str:
+        return render_class_source(class_entry, header_name)
+
+    @staticmethod
+    def _render_base_clause(base_classes: list[str]) -> str:
+        if not base_classes:
+            return ""
+        rendered = ", ".join(f"public {value}" for value in base_classes)
+        return f" : {rendered}"
 
     @staticmethod
     def _write_elf_artifacts(context, report) -> None:
@@ -458,6 +525,15 @@ class NativeLanguageAnalyzer(Analyzer):
             report.add_artifact(str(symbol_path), "text", "ELF symbol listing (parsed)")
             if any(str(symbol.get("type")) == "FUNC" for symbol in context.elf_symbols):
                 report.add_note("Recovered ELF function symbols from .symtab/.dynsym.")
+                generated = synthesize_symbolic_source_tree(
+                    ensure_dir(output_dir / "recovered_src"),
+                    origin_label="ELF function symbols",
+                    function_names=[str(symbol.get("name", "")) for symbol in context.elf_symbols if str(symbol.get("type")) == "FUNC"],
+                )
+                if generated:
+                    report.add_artifact(str(output_dir / "recovered_src"), "directory", "Pseudo-source tree synthesized from ELF symbols")
+                    for original_path, restored_path in generated:
+                        report.add_recovered_source(original_path, restored_path, "elf_symbols")
             return
 
         nm_command = resolve_command([["llvm-nm"], ["nm"]])
@@ -467,6 +543,15 @@ class NativeLanguageAnalyzer(Analyzer):
             if code == 0 and stdout.strip():
                 symbol_path.write_text(stdout, encoding="utf-8", errors="ignore")
                 report.add_artifact(str(symbol_path), "text", f"Native symbol listing produced by {' '.join(nm_command)}")
+                generated = synthesize_symbolic_source_tree(
+                    ensure_dir(output_dir / "recovered_src"),
+                    origin_label=f"native symbols via {' '.join(nm_command)}",
+                    function_names=[line.strip().split()[-1] for line in stdout.splitlines() if line.strip() and len(line.strip().split()) >= 3],
+                )
+                if generated:
+                    report.add_artifact(str(output_dir / "recovered_src"), "directory", "Pseudo-source tree synthesized from native symbols")
+                    for original_path, restored_path in generated:
+                        report.add_recovered_source(original_path, restored_path, "native_symbols")
                 return
             message = stderr.strip() or stdout.strip()
             if message:

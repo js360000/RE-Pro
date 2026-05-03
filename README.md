@@ -6,6 +6,12 @@ RE-Pro is a cross-platform reverse-engineering workbench built to turn opaque bi
 
 It combines format-aware extraction, source restoration, external tool orchestration, graph-based correlation, GPT-assisted approximation, rebuild planning, and patch/signing workflows in one system with a CLI, a PyQt5 desktop GUI, and an MCP server.
 
+## Support RE-Pro
+
+If RE-Pro helps your reverse-engineering or porting work, donations are appreciated:
+
+Bitcoin: `bc1qzyzwkfgfkeu3v44edwxaw0pre2fdvl6nd8hv0w`
+
 ## Why RE-Pro
 
 - Recover real source when it ships: source maps, managed resources, BAML/XAML, Tauri assets, manifests, symbols, package metadata, and bundled web payloads.
@@ -88,6 +94,24 @@ re-pro package-action --workspace-root path\to\run\porting\recompile --ecosystem
 re-pro package-action --workspace-root path\to\run\porting\recompile --ecosystem tauri --action repack
 re-pro package-action --workspace-root path\to\run\porting\recompile --ecosystem android-gradle --action sign-apk --artifact-path app.apk --keystore-path debug.keystore --key-alias androiddebugkey
 ```
+
+Create or rebuild PSARC archives:
+
+```bash
+re-pro package-action --workspace-root path\to\workspace --ecosystem archive --action create-psarc --target-root path\to\assets --output-path out\assets.psarc --compression zlib --compression-level 9 --block-size 0x10000
+re-pro package-action --workspace-root path\to\workspace --ecosystem archive --action overlay-rebuild --artifact-path base.psarc --target-root path\to\edited_extract --output-path out\patched.psarc
+```
+
+PSP PBP/DATA.PSP/DATA.PSAR handling is available through analysis and the file browser:
+
+```bash
+re-pro analyze path\to\EBOOT.PBP -o analysis_output --external-tools
+re-pro browse build path\to\analysis_run --rebuild
+re-pro browse write path\to\analysis_run node_00042 --mode json --content-file edited_PARAM.SFO.json
+re-pro browse patch path\to\analysis_run node_00043 --offset 0x20 --hex "00 00 00 00"
+```
+
+`pspdecrypt` is used for DATA.PSP decryption and DATA.PSAR extraction. `psp-packer` is used for DATA.PSP PRX packing when edited decrypted payloads are saved. DATA.PSAR repack/encrypt is exposed through `RE_PRO_PSP_PSAR_PACK_CMD` because no bundled general PSAR repacker is available.
 
 Load additional local analyzer plugins:
 

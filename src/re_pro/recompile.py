@@ -7,6 +7,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from .psarc import is_psarc, pack_psarc_from_directory, rebuild_psarc_with_overlay
+from .psp import is_pbp, rebuild_pbp_with_overlay
 from .tooling import resolve_command, run_command_logged
 from .utils import ensure_dir
 
@@ -324,6 +326,10 @@ def run_packaging_action(
     key_pass: str = "",
     patch_bundle_path: str = "",
     target_root: str = "",
+    output_path: str = "",
+    compression: str = "zlib",
+    compression_level: int = 9,
+    block_size: int = 0x10000,
 ) -> dict[str, Any]:
     ecosystem = ecosystem.lower()
     action = action.lower()
@@ -349,6 +355,17 @@ def run_packaging_action(
             timeout=timeout,
             artifact_path=artifact_path,
             target_root=target_root,
+        )
+    if ecosystem == "archive":
+        return _run_archive_packaging_action(
+            workspace_root=workspace_root,
+            action=action,
+            artifact_path=artifact_path,
+            target_root=target_root,
+            output_path=output_path,
+            compression=compression,
+            compression_level=compression_level,
+            block_size=block_size,
         )
     if ecosystem == "patch":
         return apply_patch_bundle(
@@ -712,6 +729,12 @@ def _run_android_packaging_action(
             logger=logger,
             timeout=timeout,
         )
+    if action == "rebuild-aab":
+        return _rebuild_bundle_archive_from_tree(
+            workspace_root=workspace_root,
+            target_root=Path(artifact_path) if artifact_path else workspace_root / "projects" / "android_studio" / "app" / "src" / "main",
+            output_name="recovered-unsigned.aab",
+        )
     if action == "repack":
         command = _android_gradle_action_command(workspace_root, "assembleDebug")
         if command is None:
@@ -788,6 +811,12 @@ def _run_electron_packaging_action(*, workspace_root: Path, action: str, logger=
         return {"ok": False, "error": "Electron project template not available"}
     if action in {"repack-asar", "asar"}:
         return _repack_electron_asar(project_root, logger=logger, timeout=timeout)
+    if action == "stage-assets":
+        return _stage_directory_tree(
+            source_root=project_root / "dist" / "incoming",
+            destination_root=project_root / "resources" / "app",
+            description="Electron asset staging",
+        )
     command = _node_script_command(project_root, preferred_scripts=["package", "dist", "make", "build"])
     if action not in {"repack", "package"} or command is None:
         return {"ok": False, "error": "No suitable Electron packaging script was found"}
@@ -802,6 +831,13 @@ def _run_tauri_packaging_action(*, workspace_root: Path, action: str, logger=Non
     if action == "stage-sidecars":
         source_root = Path(target_root) if target_root else Path(artifact_path) if artifact_path else project_root / "dist" / "sidecars"
         return _stage_tauri_sidecars(project_root, source_root)
+    if action == "stage-assets":
+        source_root = Path(target_root) if target_root else Path(artifact_path) if artifact_path else project_root / "dist" / "incoming"
+        return _stage_directory_tree(
+            source_root=source_root,
+            destination_root=project_root / "dist",
+            description="Tauri asset staging",
+        )
     if action not in {"repack", "package", "build"}:
         return {"ok": False, "error": f"Unsupported Tauri packaging action {action}"}
     npm_command = _node_script_command(project_root, preferred_scripts=["tauri", "build"])
@@ -876,6 +912,25 @@ def _rebuild_apk_from_tree(*, workspace_root: Path, target_root: Path, logger=No
     return result
 
 
+def _rebuild_bundle_archive_from_tree(*, workspace_root: Path, target_root: Path, output_name: str) -> dict[str, Any]:
+    target_root = target_root.resolve()
+    if not target_root.exists() or not target_root.is_dir():
+        return {"ok": False, "error": f"Android bundle source tree not found: {target_root}"}
+    output_bundle = workspace_root / "projects" / "android_studio" / "dist" / output_name
+    ensure_dir(output_bundle.parent)
+    with zipfile.ZipFile(output_bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for file_path in sorted(target_root.rglob("*")):
+            if not file_path.is_file():
+                continue
+            relative = file_path.relative_to(target_root).as_posix()
+            archive.write(file_path, relative)
+    return {
+        "ok": True,
+        "rebuilt_artifact": str(output_bundle),
+        "source_root": str(target_root),
+    }
+
+
 def _repack_electron_asar(project_root: Path, *, logger=None, timeout: int) -> dict[str, Any]:
     app_root = project_root / "resources" / "app"
     if not app_root.exists():
@@ -920,6 +975,111 @@ def _stage_tauri_sidecars(project_root: Path, source_root: Path) -> dict[str, An
         "source_root": str(source_root),
         "destination_root": str(destination_root),
         "copied": copied,
+    }
+
+
+def _stage_directory_tree(*, source_root: Path, destination_root: Path, description: str) -> dict[str, Any]:
+    source_root = source_root.resolve()
+    destination_root = ensure_dir(destination_root.resolve())
+    if not source_root.exists() or not source_root.is_dir():
+        return {"ok": False, "error": f"{description} source directory not found: {source_root}"}
+    copied: list[dict[str, str]] = []
+    for file_path in sorted(source_root.rglob("*")):
+        if not file_path.is_file():
+            continue
+        relative = file_path.relative_to(source_root)
+        destination = destination_root / relative
+        ensure_dir(destination.parent)
+        shutil.copy2(file_path, destination)
+        copied.append({"source": str(file_path), "destination": str(destination)})
+    return {
+        "ok": True,
+        "source_root": str(source_root),
+        "destination_root": str(destination_root),
+        "copied": copied,
+    }
+
+
+def _run_archive_packaging_action(
+    *,
+    workspace_root: Path,
+    action: str,
+    artifact_path: str,
+    target_root: str,
+    output_path: str,
+    compression: str,
+    compression_level: int,
+    block_size: int,
+) -> dict[str, Any]:
+    if action in {"create-psarc", "pack-psarc", "psarc"}:
+        if not target_root:
+            return {"ok": False, "error": "target_root is required for create-psarc"}
+        output = Path(output_path or artifact_path) if (output_path or artifact_path) else workspace_root / "dist" / f"{Path(target_root).resolve().name or 'assets'}.psarc"
+        return pack_psarc_from_directory(
+            Path(target_root),
+            output,
+            compression=compression,
+            compression_level=compression_level,
+            block_size=block_size,
+        )
+    if action != "overlay-rebuild":
+        return {"ok": False, "error": f"Unsupported archive packaging action {action}"}
+    if not artifact_path or not target_root:
+        return {"ok": False, "error": "artifact_path and target_root are required for overlay-rebuild"}
+    artifact = Path(artifact_path)
+    output = Path(output_path) if output_path else None
+    if is_psarc(artifact):
+        return rebuild_psarc_with_overlay(artifact, Path(target_root), output)
+    if is_pbp(artifact):
+        return rebuild_pbp_with_overlay(artifact, Path(target_root), output)
+    return rebuild_zip_archive_with_overlay(artifact, Path(target_root), output)
+
+
+def rebuild_zip_archive_with_overlay(base_archive: Path, overlay_root: Path, output_path: Path | None = None) -> dict[str, Any]:
+    base_archive = base_archive.resolve()
+    overlay_root = overlay_root.resolve()
+    if not base_archive.exists() or not base_archive.is_file():
+        return {"ok": False, "error": f"Base archive not found: {base_archive}"}
+    if not overlay_root.exists() or not overlay_root.is_dir():
+        return {"ok": False, "error": f"Overlay root not found: {overlay_root}"}
+    if not zipfile.is_zipfile(base_archive):
+        return {"ok": False, "error": f"Base archive is not ZIP-compatible: {base_archive}"}
+
+    if output_path is None:
+        output_path = base_archive.with_name(f"{base_archive.stem}.rebuilt{base_archive.suffix}")
+    output_path = output_path.resolve()
+    ensure_dir(output_path.parent)
+
+    replaced_entries: list[str] = []
+    with zipfile.ZipFile(base_archive, "r") as source_archive:
+        with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as destination_archive:
+            for info in source_archive.infolist():
+                if info.is_dir():
+                    continue
+                relative = info.filename.replace("\\", "/")
+                overlay_file = overlay_root / Path(relative)
+                if overlay_file.exists() and overlay_file.is_file():
+                    destination_archive.write(overlay_file, relative)
+                    replaced_entries.append(relative)
+                else:
+                    destination_archive.writestr(info, source_archive.read(info.filename))
+            for overlay_file in sorted(overlay_root.rglob("*")):
+                if not overlay_file.is_file():
+                    continue
+                relative = overlay_file.relative_to(overlay_root).as_posix()
+                if relative in replaced_entries:
+                    continue
+                if relative in destination_archive.namelist():
+                    continue
+                destination_archive.write(overlay_file, relative)
+                replaced_entries.append(relative)
+
+    return {
+        "ok": True,
+        "base_archive": str(base_archive),
+        "overlay_root": str(overlay_root),
+        "rebuilt_artifact": str(output_path),
+        "replaced_entries": sorted(replaced_entries),
     }
 
 

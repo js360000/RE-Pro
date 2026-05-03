@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..asar_tools import extract_asar_archive
+from ..frontend_reconstruct import reconstruct_bundled_frontend_assets
 from ..sourcemap import restore_sources_from_map
-from ..tooling import resolve_command, run_command
+from ..sourcemap import restore_inline_source_maps_from_file
 from ..utils import ensure_dir
 from .base import Analyzer
 
@@ -65,47 +67,109 @@ class ElectronAnalyzer(Analyzer):
             self._record_package_metadata(package_json, report)
 
         js_files = self._collect_files(search_roots, "*.js")
+        css_files = self._collect_files(search_roots, "*.css")
         map_files = self._collect_files(search_roots, "*.map")
         if js_files:
             report.add_note(f"Recovered {len(js_files)} JavaScript files across Electron asset roots.")
-        if map_files:
-            report.add_note(f"Recovered {len(map_files)} source maps across Electron asset roots.")
-            recovered_root = ensure_dir(context.output_dir / "recovered_sources")
-            total_restored = 0
-            for map_file in map_files:
-                restored_sources, notes = restore_sources_from_map(map_file, recovered_root)
-                for source in restored_sources:
-                    report.add_recovered_source(
-                        original_path=source.original_path,
-                        restored_path=source.restored_path,
-                        source_map=source.source_map,
-                    )
-                total_restored += len(restored_sources)
-                report.notes.extend(notes)
-            if total_restored:
-                report.add_finding(
-                    "Source map restoration succeeded",
-                    f"Recovered {total_restored} original source files from shipped source maps.",
-                    severity="info",
-                )
+        if css_files:
+            report.add_note(f"Recovered {len(css_files)} CSS files across Electron asset roots.")
+        total_restored = self._restore_source_maps(context, report, map_files, js_files + css_files)
+        if extracted_dir and map_files:
+            maps_inside_asar = [path for path in map_files if extracted_dir in path.parents]
+            if maps_inside_asar:
+                report.add_note(f"Found {len(maps_inside_asar)} source map file(s) inside extracted app.asar.")
+
+        if not total_restored and getattr(context.frontend_settings, "beautify_bundles", False):
+            self._reconstruct_bundled_assets(search_roots, context, report)
 
     def _extract_asar(self, asar_path: Path, context) -> Path | None:
-        destination = context.output_dir / "extracted_asar"
-        ensure_dir(destination)
-        command = resolve_command(
-            [
-                ["asar", "extract", str(asar_path), str(destination)],
-                ["npx", "-y", "@electron/asar", "extract", str(asar_path), str(destination)],
-            ]
-        )
-        if command is None:
-            return None
-        code, _, stderr = run_command(command, cwd=asar_path.parent, timeout=300)
-        if code == 0:
+        destination, error = extract_asar_archive(asar_path, context.output_dir / "extracted_asar", cwd=asar_path.parent)
+        if destination is not None:
             context.log(f"Extracted app.asar into {destination}")
             return destination
-        context.log(f"asar extraction failed: {stderr.strip()}")
+        context.log(f"asar extraction failed: {error}")
         return None
+
+    @staticmethod
+    def _restore_source_maps(context, report, map_files: list[Path], js_files: list[Path]) -> int:
+        recovered_root = ensure_dir(context.output_dir / "recovered_sources")
+        total_restored = 0
+        if map_files:
+            report.add_note(f"Recovered {len(map_files)} source map file(s) across Electron asset roots.")
+        for map_file in map_files:
+            restored_sources, notes = restore_sources_from_map(map_file, recovered_root)
+            for source in restored_sources:
+                report.add_recovered_source(
+                    original_path=source.original_path,
+                    restored_path=source.restored_path,
+                    source_map=source.source_map,
+                )
+            total_restored += len(restored_sources)
+            report.notes.extend(notes)
+        inline_map_count = 0
+        for source_file in js_files:
+            restored_sources, notes = restore_inline_source_maps_from_file(source_file, recovered_root)
+            if restored_sources:
+                inline_map_count += 1
+            for source in restored_sources:
+                report.add_recovered_source(
+                    original_path=source.original_path,
+                    restored_path=source.restored_path,
+                    source_map=source.source_map,
+                )
+            total_restored += len(restored_sources)
+            report.notes.extend(notes)
+        if inline_map_count:
+            report.add_note(f"Recovered original sources from {inline_map_count} inline Electron source map reference(s).")
+        if total_restored:
+            report.add_finding(
+                "Source map restoration succeeded",
+                f"Recovered {total_restored} original source files from shipped Electron source maps.",
+                severity="info",
+            )
+        return total_restored
+
+    @staticmethod
+    def _reconstruct_bundled_assets(search_roots: list[Path], context, report) -> None:
+        recovered_root = ensure_dir(context.output_dir / "recovered_sources")
+        total = 0
+        for root in search_roots:
+            if not root.exists() or not root.is_dir():
+                continue
+            reconstructed = reconstruct_bundled_frontend_assets(
+                root,
+                root / "RE_PRO_ASSET_MANIFEST.json",
+                recovered_root,
+                bundle_name=f"electron_{root.name}",
+                llm_settings=getattr(context, "llm_settings", None),
+            )
+            count = int(reconstructed.get("recovered_count") or 0)
+            if not count:
+                continue
+            total += count
+            report.add_artifact(
+                str(reconstructed["source_root"]),
+                "directory",
+                "Beautified Electron bundled frontend sources",
+            )
+            report.add_artifact(
+                str(reconstructed["manifest_path"]),
+                "manifest",
+                "Electron bundled source beautification manifest",
+            )
+            for recovered in reconstructed.get("recovered_sources") or []:
+                report.add_recovered_source(
+                    original_path=str(recovered["original_path"]),
+                    restored_path=str(recovered["restored_path"]),
+                    source_map=str(recovered["source_map"]),
+                )
+            report.notes.extend(str(note) for note in reconstructed.get("notes") or [])
+        if total:
+            report.add_finding(
+                "Bundled frontend source approximation generated",
+                f"Beautified {total} Electron frontend asset(s) because no usable source maps were restored.",
+                severity="info",
+            )
 
     @staticmethod
     def _find_first(search_roots: list[Path], pattern: str) -> Path | None:

@@ -56,7 +56,7 @@ Bitcoin: `bc1qzyzwkfgfkeu3v44edwxaw0pre2fdvl6nd8hv0w`
 - Bounded package actions for APK signing, Electron repack, Tauri packaging, and patch application.
 - PSARC create/rebuild workflows preserving compression choices, block sizes, file order, and editable extracted overlays.
 - Source-first browser workspaces for viewing and editing recovered files, manifests, archives, executables, JSON resources, PARAM.SFO, and hex/base64 nodes.
-- Curated output views with selectable presets, include/exclude buckets, custom folder maps, and reference-or-copy modes for cleaner operator-facing run folders.
+- Curated output views with selectable presets, include/exclude buckets, custom folder maps, reference-or-copy modes, analyzer include/exclude rules, and run-output budgets for cleaner operator-facing run folders.
 - Optional GPT-5.5/GPT-5.4-assisted approximation when direct source recovery is weak.
 
 For a more scan-friendly matrix, see [docs/supported-formats.md](docs/supported-formats.md).
@@ -64,7 +64,7 @@ For a more scan-friendly matrix, see [docs/supported-formats.md](docs/supported-
 ### Interfaces
 
 - PyQt5 desktop GUI for reports, artifacts, recovered sources, and graph-driven pivots.
-- Dedicated GUI surfaces for function evidence, recovery quality, background/stub jobs, live LLM status, and source-first file editing.
+- Dedicated GUI surfaces for function evidence, recovery quality, curated output browsing, background/stub jobs, live LLM status, and source-first file editing.
 - CLI for analysis, run inspection, live-process capture, source browsing/editing, architecture-port generation, profiles, comparison, patch-bundle creation, packaging actions, MCP launch details, and tooling install.
 - MCP server exposing analysis, graph search, reconstruction, validation, diff, rebuild, and packaging workflows to external LLM clients.
 - Saved JSON profiles for repeatable analysis and package-action runs.
@@ -124,6 +124,7 @@ Generate a cleaner operator-facing output tree while preserving the full raw run
 ```bash
 re-pro analyze path\to\target.exe -o analysis_output --output-profile source-first --output-view-mode reference
 re-pro analyze path\to\target.exe -o analysis_output --output-profile custom --output-include reports,recovered_sources,usability --output-exclude logs --output-folder-map recovered_sources=src/recovered
+re-pro analyze path\to\target.exe -o analysis_output --analyzer-exclude ghidra,jadx --output-max-run-mb 2048 --output-max-artifacts 500
 ```
 
 Compare two existing runs:

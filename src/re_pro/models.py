@@ -134,6 +134,10 @@ class OutputSettings:
     exclude: list[str] = field(default_factory=list)
     folder_map: dict[str, str] = field(default_factory=dict)
     max_copy_bytes: int = 512 * 1024 * 1024
+    analyzer_include: list[str] = field(default_factory=list)
+    analyzer_exclude: list[str] = field(default_factory=list)
+    max_run_artifact_bytes: int = 0
+    max_run_artifact_count: int = 0
 
     @classmethod
     def from_dict(cls, payload: dict[str, object] | None) -> "OutputSettings":
@@ -147,6 +151,10 @@ class OutputSettings:
             exclude=_string_list(payload.get("exclude")),
             folder_map=_string_map(payload.get("folder_map")),
             max_copy_bytes=int(payload.get("max_copy_bytes", 512 * 1024 * 1024) or 512 * 1024 * 1024),
+            analyzer_include=_string_list(payload.get("analyzer_include")),
+            analyzer_exclude=_string_list(payload.get("analyzer_exclude")),
+            max_run_artifact_bytes=max(0, int(payload.get("max_run_artifact_bytes", 0) or 0)),
+            max_run_artifact_count=max(0, int(payload.get("max_run_artifact_count", 0) or 0)),
         )
 
     def to_dict(self) -> dict[str, object]:

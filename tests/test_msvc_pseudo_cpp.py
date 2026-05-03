@@ -494,6 +494,31 @@ class MsvcPseudoCppTests(unittest.TestCase):
             self.assertNotIn("TODO: map this stub", source_text)
             self.assertIn("declared pure virtual in the header", source_text)
 
+    def test_write_pseudo_class_sources_emits_evidence_fallback_for_unresolved_methods(self) -> None:
+        recovered = {
+            "classes": [
+                {
+                    "name": "Widget",
+                    "kind": "class",
+                    "mangled_name": ".?AVWidget@@",
+                    "type_descriptor_rva": "0x2000",
+                    "base_classes": [],
+                    "methods": [
+                        {"name": "vf_140001300", "slot": 4, "address": "0x140001300", "vtable_rva": "0x2128"},
+                    ],
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            write_pseudo_class_sources(Path(temp_dir), recovered)
+
+            source_text = (Path(temp_dir) / "Widget.cpp").read_text(encoding="utf-8")
+
+            self.assertNotIn("TODO", source_text)
+            self.assertIn("Body unresolved in available decompiler exports", source_text)
+            self.assertIn("return;", source_text)
+
     def test_write_pseudo_class_sources_uses_method_name_semantics_for_setters(self) -> None:
         recovered = {
             "classes": [

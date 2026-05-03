@@ -272,6 +272,8 @@ class MainWindow(QMainWindow):
         self._mcp_details: dict | None = None
         self._browser_manifest: dict | None = None
         self._current_browser_node_id: str = ""
+        self._output_view_manifest: dict | None = None
+        self._output_view_entries: list[dict] = []
         self._function_evidence_entities: list[dict] = []
         self._job_center_rows: list[dict] = []
         self.ghidra_log_window: BackgroundLogWindow | None = None
@@ -314,6 +316,10 @@ class MainWindow(QMainWindow):
         self.output_include_input.setPlaceholderText("include buckets, comma-separated")
         self.output_exclude_input = QLineEdit()
         self.output_exclude_input.setPlaceholderText("exclude buckets")
+        self.output_folder_map_input = QLineEdit()
+        self.output_folder_map_input.setPlaceholderText("folder map bucket=folder, comma-separated")
+        self.output_max_copy_input = QLineEdit("512")
+        self.output_max_copy_input.setMaximumWidth(70)
         output_view_row.addWidget(self.output_view_checkbox)
         output_view_row.addWidget(QLabel("Profile"))
         output_view_row.addWidget(self.output_profile_combo)
@@ -323,6 +329,27 @@ class MainWindow(QMainWindow):
         output_view_row.addWidget(self.output_view_name_input)
         output_view_row.addWidget(self.output_include_input)
         output_view_row.addWidget(self.output_exclude_input)
+
+        output_rules_row = QHBoxLayout()
+        self.output_analyzer_include_input = QLineEdit()
+        self.output_analyzer_include_input.setPlaceholderText("analyzer include filters")
+        self.output_analyzer_exclude_input = QLineEdit()
+        self.output_analyzer_exclude_input.setPlaceholderText("analyzer exclude filters")
+        self.output_max_run_input = QLineEdit("0")
+        self.output_max_run_input.setMaximumWidth(70)
+        self.output_max_artifacts_input = QLineEdit("0")
+        self.output_max_artifacts_input.setMaximumWidth(70)
+        output_rules_row.addWidget(QLabel("Folders"))
+        output_rules_row.addWidget(self.output_folder_map_input)
+        output_rules_row.addWidget(QLabel("Copy MiB"))
+        output_rules_row.addWidget(self.output_max_copy_input)
+        output_rules_row.addWidget(QLabel("Run"))
+        output_rules_row.addWidget(self.output_analyzer_include_input)
+        output_rules_row.addWidget(self.output_analyzer_exclude_input)
+        output_rules_row.addWidget(QLabel("Max MiB"))
+        output_rules_row.addWidget(self.output_max_run_input)
+        output_rules_row.addWidget(QLabel("Max Artifacts"))
+        output_rules_row.addWidget(self.output_max_artifacts_input)
 
         profile_row = QHBoxLayout()
         self.profile_name_input = QLineEdit()
@@ -356,6 +383,7 @@ class MainWindow(QMainWindow):
         controls_layout.addRow("Target", target_row)
         controls_layout.addRow("Output Root", output_row)
         controls_layout.addRow("Output View", output_view_row)
+        controls_layout.addRow("Output Rules", output_rules_row)
         controls_layout.addRow("Profiles", profile_row)
         controls_layout.addRow("Tools Root", self.tools_input)
 
@@ -512,6 +540,41 @@ class MainWindow(QMainWindow):
         artifacts_splitter.addWidget(preview_panel)
         artifacts_splitter.setSizes([420, 720])
         self.artifacts_tab_widget = artifacts_splitter
+
+        output_view_panel = QWidget()
+        output_view_layout = QVBoxLayout(output_view_panel)
+        output_view_actions = QHBoxLayout()
+        self.output_view_refresh_button = QPushButton("Refresh View")
+        self.output_view_open_button = QPushButton("Open Routed")
+        self.output_view_open_source_button = QPushButton("Open Source")
+        self.output_view_open_root_button = QPushButton("Open View Root")
+        self.output_view_bucket_combo = QComboBox()
+        self.output_view_bucket_combo.addItems(["All"])
+        self.output_view_search_input = QLineEdit()
+        self.output_view_search_input.setPlaceholderText("Search label, path, category, or bucket")
+        output_view_actions.addWidget(self.output_view_refresh_button)
+        output_view_actions.addWidget(self.output_view_open_button)
+        output_view_actions.addWidget(self.output_view_open_source_button)
+        output_view_actions.addWidget(self.output_view_open_root_button)
+        output_view_actions.addWidget(QLabel("Bucket"))
+        output_view_actions.addWidget(self.output_view_bucket_combo)
+        output_view_actions.addWidget(QLabel("Search"))
+        output_view_actions.addWidget(self.output_view_search_input)
+        self.output_view_status_label = QLabel("Enable Output View or load a run with output_view_manifest.json.")
+        self.output_view_status_label.setWordWrap(True)
+        self.output_view_table = QTableWidget(0, 6)
+        self.output_view_table.setHorizontalHeaderLabels(["Bucket", "Label", "Kind", "Category", "Routed Path", "Original Path"])
+        self.output_view_table.horizontalHeader().setStretchLastSection(True)
+        self.output_view_table.itemSelectionChanged.connect(self._show_selected_output_view_entry)
+        self.output_view_detail = QPlainTextEdit()
+        self.output_view_detail.setReadOnly(True)
+        output_view_splitter = QSplitter(Qt.Vertical)
+        output_view_splitter.addWidget(self.output_view_table)
+        output_view_splitter.addWidget(self.output_view_detail)
+        output_view_splitter.setSizes([360, 240])
+        output_view_layout.addLayout(output_view_actions)
+        output_view_layout.addWidget(self.output_view_status_label)
+        output_view_layout.addWidget(output_view_splitter)
 
         self.sources_tree = QTreeWidget()
         self.sources_tree.setHeaderLabels(["Recovered Source", "Restored Path"])
@@ -742,6 +805,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.frameworks_list, "Frameworks")
         self.tabs.addTab(self.findings_table, "Findings")
         self.tabs.addTab(artifacts_splitter, "Artifacts")
+        self.tabs.addTab(output_view_panel, "Output View")
         self.tabs.addTab(self.sources_tree, "Recovered Sources")
         self.tabs.addTab(browser_panel, "File Browser")
         self.tabs.addTab(index_panel, "Analysis Index")
@@ -791,6 +855,12 @@ class MainWindow(QMainWindow):
         self.browser_save_button.clicked.connect(self._save_browser_node)
         self.browser_patch_button.clicked.connect(self._patch_browser_node)
         self.browser_mode_combo.currentTextChanged.connect(self._reload_current_browser_node)
+        self.output_view_refresh_button.clicked.connect(self._refresh_output_view_browser)
+        self.output_view_open_button.clicked.connect(self._open_selected_output_view_entry)
+        self.output_view_open_source_button.clicked.connect(self._open_selected_output_view_source)
+        self.output_view_open_root_button.clicked.connect(self._open_output_view_root)
+        self.output_view_search_input.textChanged.connect(self._refresh_output_view_table)
+        self.output_view_bucket_combo.currentTextChanged.connect(self._refresh_output_view_table)
         self.mcp_start_button.clicked.connect(self._start_mcp_server)
         self.mcp_stop_button.clicked.connect(self._stop_mcp_server)
         self.mcp_refresh_button.clicked.connect(self._refresh_mcp_config)
@@ -1166,6 +1236,132 @@ class MainWindow(QMainWindow):
             item.setData(Qt.UserRole, artifact.get("path"))
             self.artifacts_list.addItem(item)
 
+    def _populate_output_view(self, report: dict) -> None:
+        self._output_view_manifest = self._load_output_view_manifest(report)
+        self._output_view_entries = list((self._output_view_manifest or {}).get("entries") or [])
+        buckets = sorted({str(entry.get("bucket", "")).strip() for entry in self._output_view_entries if entry.get("bucket")})
+        current_bucket = self.output_view_bucket_combo.currentText()
+        self.output_view_bucket_combo.blockSignals(True)
+        self.output_view_bucket_combo.clear()
+        self.output_view_bucket_combo.addItem("All")
+        for bucket in buckets:
+            self.output_view_bucket_combo.addItem(bucket)
+        if current_bucket in {"All", *buckets}:
+            self.output_view_bucket_combo.setCurrentText(current_bucket)
+        self.output_view_bucket_combo.blockSignals(False)
+        manifest = self._output_view_manifest or {}
+        if manifest:
+            self.output_view_status_label.setText(
+                f"Output view: {manifest.get('view_root')} | "
+                f"{manifest.get('entry_count', len(self._output_view_entries))} entries | "
+                f"profile={manifest.get('profile')} mode={manifest.get('mode')}"
+            )
+        else:
+            self.output_view_status_label.setText("No output view manifest is available for this report.")
+        self._refresh_output_view_table()
+
+    def _load_output_view_manifest(self, report: dict) -> dict | None:
+        manifest_path = self._find_artifact_path(report, "Output view manifest")
+        candidate = self._path_or_none(manifest_path)
+        if candidate is None:
+            output_dir = str(report.get("output_dir", "")).strip()
+            if output_dir:
+                candidate = Path(output_dir) / "operator_view" / "output_view_manifest.json"
+        return self._read_json_file(candidate)
+
+    def _refresh_output_view_browser(self) -> None:
+        if self._current_report is None:
+            self.output_view_status_label.setText("No report is loaded.")
+            return
+        self._populate_output_view(self._current_report)
+
+    def _refresh_output_view_table(self) -> None:
+        bucket_filter = self.output_view_bucket_combo.currentText().strip()
+        query = self.output_view_search_input.text().strip().lower()
+        rows: list[dict] = []
+        for entry in self._output_view_entries:
+            bucket = str(entry.get("bucket", "")).strip()
+            if bucket_filter and bucket_filter != "All" and bucket != bucket_filter:
+                continue
+            searchable = " ".join(
+                str(entry.get(key, ""))
+                for key in ["bucket", "label", "kind", "category", "description", "path", "original_path", "copied_path"]
+            ).lower()
+            if query and query not in searchable:
+                continue
+            rows.append(entry)
+        self.output_view_table.setRowCount(len(rows))
+        for row, entry in enumerate(rows):
+            routed_path = self._output_view_routed_path(entry)
+            values = [
+                str(entry.get("bucket", "")),
+                str(entry.get("label", "")),
+                str(entry.get("kind", "")),
+                str(entry.get("category", "")),
+                routed_path,
+                str(entry.get("original_path") or entry.get("path") or ""),
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.UserRole, entry)
+                self.output_view_table.setItem(row, column, item)
+        self.output_view_table.resizeColumnsToContents()
+
+    def _show_selected_output_view_entry(self) -> None:
+        entry = self._selected_output_view_entry()
+        if entry is None:
+            self.output_view_detail.clear()
+            return
+        routed_path = self._output_view_routed_path(entry)
+        summary = {
+            "bucket": entry.get("bucket"),
+            "kind": entry.get("kind"),
+            "label": entry.get("label"),
+            "description": entry.get("description"),
+            "category": entry.get("category"),
+            "routed_path": routed_path,
+            "original_path": entry.get("original_path") or entry.get("path"),
+            "copied_bytes": entry.get("copied_bytes"),
+            "copy_skipped_reason": entry.get("copy_skipped_reason"),
+        }
+        preview_path = Path(routed_path) if routed_path else None
+        parts = ["Output View Entry", "", json.dumps(summary, indent=2)]
+        if preview_path is not None and preview_path.exists() and preview_path.is_file():
+            parts.extend(["", "Preview", self._read_text_file(preview_path, max_bytes=80_000)])
+        self.output_view_detail.setPlainText("\n".join(parts))
+
+    def _selected_output_view_entry(self) -> dict | None:
+        selected = self.output_view_table.selectedItems()
+        if not selected:
+            return None
+        entry = selected[0].data(Qt.UserRole)
+        return entry if isinstance(entry, dict) else None
+
+    def _open_selected_output_view_entry(self) -> None:
+        entry = self._selected_output_view_entry()
+        if entry is None:
+            return
+        self._open_existing_path(self._output_view_routed_path(entry))
+
+    def _open_selected_output_view_source(self) -> None:
+        entry = self._selected_output_view_entry()
+        if entry is None:
+            return
+        self._open_existing_path(str(entry.get("original_path") or entry.get("path") or ""))
+
+    def _open_output_view_root(self) -> None:
+        manifest = self._output_view_manifest or {}
+        self._open_existing_path(str(manifest.get("view_root", "")))
+
+    @staticmethod
+    def _output_view_routed_path(entry: dict) -> str:
+        return str(entry.get("copied_path") or entry.get("link_descriptor") or entry.get("path") or "")
+
+    @staticmethod
+    def _open_existing_path(path: str) -> None:
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
     def _populate_sources(self, report: dict) -> None:
         self.sources_tree.clear()
         for source in report.get("recovered_sources") or []:
@@ -1424,6 +1620,7 @@ class MainWindow(QMainWindow):
         self._populate_llm(report)
         self._populate_findings(report)
         self._populate_artifacts(report)
+        self._populate_output_view(report)
         self._populate_sources(report)
         self._populate_browser(report)
         self._populate_index(report)
@@ -1586,13 +1783,23 @@ class MainWindow(QMainWindow):
         profile = self.output_profile_combo.currentText().strip() or "full"
         include = self._csv_items(self.output_include_input.text())
         exclude = self._csv_items(self.output_exclude_input.text())
+        folder_map = self._parse_folder_map_text(self.output_folder_map_input.text())
+        max_copy_mb = max(1, self._parse_int(self.output_max_copy_input.text().strip(), default=512))
+        max_run_mb = max(0, self._parse_int(self.output_max_run_input.text().strip(), default=0))
+        max_artifacts = max(0, self._parse_int(self.output_max_artifacts_input.text().strip(), default=0))
         return OutputSettings(
-            enabled=self.output_view_checkbox.isChecked() or profile != "full" or bool(include or exclude),
+            enabled=self.output_view_checkbox.isChecked() or profile != "full" or bool(include or exclude or folder_map),
             profile=profile,
             view_name=self.output_view_name_input.text().strip() or "operator_view",
             mode=self.output_mode_combo.currentText().strip() or "reference",
             include=include,
             exclude=exclude,
+            folder_map=folder_map,
+            max_copy_bytes=max_copy_mb * 1024 * 1024,
+            analyzer_include=self._csv_items(self.output_analyzer_include_input.text()),
+            analyzer_exclude=self._csv_items(self.output_analyzer_exclude_input.text()),
+            max_run_artifact_bytes=max_run_mb * 1024 * 1024,
+            max_run_artifact_count=max_artifacts,
         )
 
     def _save_analysis_profile(self, report: dict | None = None) -> str | None:
@@ -1718,6 +1925,12 @@ class MainWindow(QMainWindow):
         self.output_view_name_input.setText(output_settings.view_name)
         self.output_include_input.setText(",".join(output_settings.include))
         self.output_exclude_input.setText(",".join(output_settings.exclude))
+        self.output_folder_map_input.setText(",".join(f"{key}={value}" for key, value in output_settings.folder_map.items()))
+        self.output_max_copy_input.setText(str(max(1, output_settings.max_copy_bytes // (1024 * 1024))))
+        self.output_analyzer_include_input.setText(",".join(output_settings.analyzer_include))
+        self.output_analyzer_exclude_input.setText(",".join(output_settings.analyzer_exclude))
+        self.output_max_run_input.setText(str(max(0, output_settings.max_run_artifact_bytes // (1024 * 1024))))
+        self.output_max_artifacts_input.setText(str(max(0, output_settings.max_run_artifact_count)))
         self.profile_name_input.setText(str(profile.get("name", "")))
         self._load_selected_profile_report()
         self.statusBar().showMessage(f"Loaded profile: {profile.get('name', '')}")
@@ -1772,6 +1985,19 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _csv_items(value: str) -> list[str]:
         return [item.strip() for item in value.split(",") if item.strip()]
+
+    @staticmethod
+    def _parse_folder_map_text(value: str) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for item in value.split(","):
+            if "=" not in item:
+                continue
+            key, folder = item.split("=", 1)
+            key = key.strip().lower()
+            folder = folder.strip()
+            if key and folder:
+                mapping[key] = folder
+        return mapping
 
     @staticmethod
     def _load_artifact_text(report: dict, description_contains: str) -> str:

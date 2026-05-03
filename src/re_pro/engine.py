@@ -106,6 +106,7 @@ class ReverseEngineeringEngine:
         self.output_settings = output_settings or OutputSettings()
         self.plugin_dirs = resolve_plugin_dirs(plugin_dirs)
         self.analyzers = build_analyzers(plugin_dirs=self.plugin_dirs, logger=self.logger)
+        self._analyzer_run_records: list[dict[str, object]] = []
 
     def analyze(self, target: str | Path) -> AnalysisReport:
         target_path = Path(target).resolve()
@@ -152,11 +153,24 @@ class ReverseEngineeringEngine:
         self._seed_analysis_index(context, report)
 
         self._log(f"Starting analysis for {target_path}")
+        self._analyzer_run_records = []
         for analyzer in self.analyzers:
+            skip_reason = self._analyzer_skip_reason(analyzer, output_dir, report)
+            if skip_reason:
+                self._record_analyzer_skip(analyzer, skip_reason)
+                self._log(f"Skipping analyzer: {analyzer.name} ({skip_reason})")
+                continue
             started = time.monotonic()
             self._log(f"Running analyzer: {analyzer.name}")
             analyzer.analyze(context, report)
-            self._log(f"Completed analyzer: {analyzer.name} in {time.monotonic() - started:.1f}s")
+            duration = time.monotonic() - started
+            self._record_analyzer_run(analyzer, duration)
+            self._log(f"Completed analyzer: {analyzer.name} in {duration:.1f}s")
+        skipped = [record for record in self._analyzer_run_records if record.get("state") == "skipped"]
+        if skipped:
+            preview = "; ".join(f"{record.get('name')} ({record.get('skip_reason')})" for record in skipped[:8])
+            suffix = f"; +{len(skipped) - 8} more" if len(skipped) > 8 else ""
+            report.add_note(f"Output rules skipped {len(skipped)} analyzer(s): {preview}{suffix}.")
 
         self._write_pipeline_manifest(report, output_dir)
         self._write_analysis_index(context, report, output_dir)
@@ -184,20 +198,105 @@ class ReverseEngineeringEngine:
 
     def _write_pipeline_manifest(self, report: AnalysisReport, output_dir: Path) -> None:
         manifest_path = output_dir / "analysis_pipeline.json"
+        analyzer_records = self._analyzer_run_records or [
+            {
+                "name": analyzer.name,
+                "class": analyzer.__class__.__name__,
+                "module": analyzer.__class__.__module__,
+                "state": "pending",
+            }
+            for analyzer in self.analyzers
+        ]
         payload = {
-            "analyzers": [
-                {
-                    "name": analyzer.name,
-                    "class": analyzer.__class__.__name__,
-                    "module": analyzer.__class__.__module__,
-                }
-                for analyzer in self.analyzers
-            ],
+            "analyzers": analyzer_records,
             "plugin_dirs": [str(path) for path in self.plugin_dirs],
             "output_settings": self.output_settings.to_dict(),
+            "output_rules": {
+                "analyzer_include": list(self.output_settings.analyzer_include),
+                "analyzer_exclude": list(self.output_settings.analyzer_exclude),
+                "max_run_artifact_bytes": self.output_settings.max_run_artifact_bytes,
+                "max_run_artifact_count": self.output_settings.max_run_artifact_count,
+            },
         }
         manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         report.add_artifact(str(manifest_path), "manifest", "Analysis pipeline manifest")
+
+    def _analyzer_skip_reason(self, analyzer: object, output_dir: Path, report: AnalysisReport) -> str:
+        if self.output_settings.analyzer_include and not self._analyzer_matches(
+            analyzer,
+            self.output_settings.analyzer_include,
+        ):
+            return f"not matched by analyzer include rules: {', '.join(self.output_settings.analyzer_include)}"
+        if self.output_settings.analyzer_exclude and self._analyzer_matches(analyzer, self.output_settings.analyzer_exclude):
+            return f"matched analyzer exclude rules: {', '.join(self.output_settings.analyzer_exclude)}"
+        return self._output_budget_skip_reason(output_dir, report)
+
+    def _record_analyzer_run(self, analyzer: object, duration_seconds: float) -> None:
+        record = self._analyzer_record_base(analyzer)
+        record.update({"state": "ran", "duration_seconds": round(duration_seconds, 3)})
+        self._analyzer_run_records.append(record)
+
+    def _record_analyzer_skip(self, analyzer: object, reason: str) -> None:
+        record = self._analyzer_record_base(analyzer)
+        record.update({"state": "skipped", "skip_reason": reason})
+        self._analyzer_run_records.append(record)
+
+    @staticmethod
+    def _analyzer_record_base(analyzer: object) -> dict[str, object]:
+        return {
+            "name": str(getattr(analyzer, "name", analyzer.__class__.__name__)),
+            "class": analyzer.__class__.__name__,
+            "module": analyzer.__class__.__module__,
+        }
+
+    @classmethod
+    def _analyzer_matches(cls, analyzer: object, patterns: list[str]) -> bool:
+        haystack = cls._analyzer_identity_text(analyzer)
+        for pattern in patterns:
+            normalized = cls._normalize_rule_token(pattern)
+            if normalized and normalized in haystack:
+                return True
+        return False
+
+    @staticmethod
+    def _analyzer_identity_text(analyzer: object) -> str:
+        parts = [
+            str(getattr(analyzer, "name", "")),
+            analyzer.__class__.__name__,
+            analyzer.__class__.__module__,
+        ]
+        return " ".join(_normalize_rule_text(part) for part in parts if part)
+
+    @staticmethod
+    def _normalize_rule_token(value: object) -> str:
+        return _normalize_rule_text(str(value or ""))
+
+    def _output_budget_skip_reason(self, output_dir: Path, report: AnalysisReport) -> str:
+        max_bytes = max(0, int(self.output_settings.max_run_artifact_bytes or 0))
+        max_count = max(0, int(self.output_settings.max_run_artifact_count or 0))
+        if max_count and len(report.artifacts) >= max_count:
+            return f"artifact count budget reached ({len(report.artifacts)}/{max_count})"
+        if max_bytes:
+            total_bytes = self._output_tree_size(output_dir, stop_after=max_bytes)
+            if total_bytes >= max_bytes:
+                return f"artifact byte budget reached ({total_bytes}/{max_bytes} bytes)"
+        return ""
+
+    @staticmethod
+    def _output_tree_size(root: Path, *, stop_after: int = 0) -> int:
+        if not root.exists():
+            return 0
+        total = 0
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+            if stop_after and total >= stop_after:
+                return total
+        return total
 
     def _seed_analysis_index(self, context: AnalysisContext, report: AnalysisReport) -> None:
         target_id = context.analysis_index.ensure_target(str(context.target), report.target_type)
@@ -360,3 +459,7 @@ class ReverseEngineeringEngine:
     def _log(self, message: str) -> None:
         if self.logger:
             self.logger(message)
+
+
+def _normalize_rule_text(value: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else " " for ch in value).strip()

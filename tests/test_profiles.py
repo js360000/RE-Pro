@@ -46,6 +46,10 @@ class ProfileStoreTests(unittest.TestCase):
                         include=["usability"],
                         exclude=["logs"],
                         folder_map={"recovered_sources": "src/recovered"},
+                        analyzer_include=["native"],
+                        analyzer_exclude=["ghidra"],
+                        max_run_artifact_bytes=128 * 1024 * 1024,
+                        max_run_artifact_count=64,
                     ),
                     report={
                         "target": str(root / "z-code.exe"),
@@ -74,6 +78,10 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(settings["output_settings"].profile, "source-first")
             self.assertEqual(settings["output_settings"].mode, "copy")
             self.assertEqual(settings["output_settings"].folder_map["recovered_sources"], "src/recovered")
+            self.assertEqual(settings["output_settings"].analyzer_include, ["native"])
+            self.assertEqual(settings["output_settings"].analyzer_exclude, ["ghidra"])
+            self.assertEqual(settings["output_settings"].max_run_artifact_bytes, 128 * 1024 * 1024)
+            self.assertEqual(settings["output_settings"].max_run_artifact_count, 64)
 
             entries = list_profiles(profiles_root=root / "profiles", query="turbopack")
             self.assertEqual(len(entries), 1)

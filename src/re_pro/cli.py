@@ -113,6 +113,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override a bucket folder with bucket=folder, e.g. recovered_sources=src",
     )
     analyze.add_argument("--output-max-copy-mb", type=int, default=512, help="Maximum total bytes to copy when --output-view-mode copy is used")
+    analyze.add_argument("--analyzer-include", default="", help="Comma-separated analyzer name/class/module filters to run; all others are skipped")
+    analyze.add_argument("--analyzer-exclude", default="", help="Comma-separated analyzer name/class/module filters to skip")
+    analyze.add_argument(
+        "--output-max-run-mb",
+        type=int,
+        default=0,
+        help="Stop launching further analyzers after run output reaches this size in MiB; 0 disables the budget",
+    )
+    analyze.add_argument(
+        "--output-max-artifacts",
+        type=int,
+        default=0,
+        help="Stop launching further analyzers after this many report artifacts; 0 disables the budget",
+    )
 
     install_tools = subparsers.add_parser("install-tools", help="Download portable reverse-engineering dependencies")
     install_tools.add_argument("--tools-root", default=DEFAULT_TOOLS_ROOT, help="Installation root for downloaded tools")
@@ -331,6 +345,24 @@ def main() -> int:
             exclude=_csv_items(args.output_exclude) or list(output_profile.exclude),
             folder_map={**output_profile.folder_map, **_parse_folder_map(args.output_folder_map)},
             max_copy_bytes=max(1, _merge_value(args.output_max_copy_mb, 512, output_profile.max_copy_bytes // (1024 * 1024))) * 1024 * 1024,
+            analyzer_include=_csv_items(args.analyzer_include) or list(output_profile.analyzer_include),
+            analyzer_exclude=_csv_items(args.analyzer_exclude) or list(output_profile.analyzer_exclude),
+            max_run_artifact_bytes=max(
+                0,
+                int(
+                    _merge_value(
+                        args.output_max_run_mb,
+                        0,
+                        output_profile.max_run_artifact_bytes // (1024 * 1024),
+                    )
+                ),
+            )
+            * 1024
+            * 1024,
+            max_run_artifact_count=max(
+                0,
+                int(_merge_value(args.output_max_artifacts, 0, output_profile.max_run_artifact_count)),
+            ),
         )
         if porting_settings.enabled and porting_settings.target_arch:
             port_task = (

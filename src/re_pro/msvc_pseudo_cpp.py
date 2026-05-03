@@ -220,7 +220,7 @@ def render_class_source(
         if body:
             lines.extend(body.splitlines())
         else:
-            lines.append("    // TODO: map this stub to decompiler output and rebuild the original body.")
+            lines.extend(_fallback_method_body(method, class_entry, method_info, decompiled_entry).splitlines())
         lines.append("}")
     for namespace_name in reversed(namespaces):
         lines.extend(["", f"}} // namespace {namespace_name}"])
@@ -276,6 +276,75 @@ def _method_body(decompiled_entry: dict[str, object] | None, class_entry: dict[s
         return ""
     body = _rewrite_body_member_accesses(body, class_entry or {})
     return "\n".join(f"    {line.rstrip()}" if line.strip() else "" for line in body.splitlines())
+
+
+def _fallback_method_body(
+    method: dict[str, object],
+    class_entry: dict[str, object],
+    method_info: dict[str, object],
+    decompiled_entry: dict[str, object] | None,
+) -> str:
+    del class_entry
+    lines = [
+        "    // Body unresolved in available decompiler exports; conservative fallback synthesized from RTTI,",
+        "    // vtable slot, signature, and callsite evidence so the source tree remains navigable.",
+    ]
+    if decompiled_entry and not decompiled_entry.get("decompile_success"):
+        error = str(decompiled_entry.get("error") or decompiled_entry.get("message") or "").strip()
+        if error:
+            lines.append(f"    // Decompiler status: {error[:240]}")
+    shared_slots = method.get("shared_vtable_target_slots")
+    if shared_slots:
+        slot_values = list(shared_slots) if isinstance(shared_slots, (list, tuple, set)) else [shared_slots]
+        lines.append(f"    // Shared target slots: {', '.join(str(slot) for slot in slot_values[:16])}")
+    callers = [str(value) for value in method_info.get("caller_names") or [] if value]
+    if callers:
+        lines.append(f"    // Caller evidence retained for manual lift: {', '.join(callers[:6])}")
+    statement = _fallback_return_statement(method_info)
+    if statement:
+        lines.append(statement)
+    return "\n".join(lines)
+
+
+def _fallback_return_statement(method_info: dict[str, object]) -> str:
+    method_kind = str(method_info.get("method_kind") or "").strip()
+    if method_kind in {"constructor", "destructor", "scalar_deleting_destructor", "vector_deleting_destructor"}:
+        return "    return;"
+    return_type = str(method_info.get("return_type") or "").strip()
+    normalized = return_type.replace(" ", "").lower()
+    if not normalized or normalized == "void":
+        return "    return;"
+    if normalized in {"bool", "boolean"}:
+        return "    return false;"
+    if "*" in return_type:
+        return "    return nullptr;"
+    if return_type.rstrip().endswith("&"):
+        pointee = return_type.rstrip("& ").strip() or "char"
+        return f"    return *reinterpret_cast<{pointee} *>(0);"
+    if any(token in normalized for token in ["float", "double", "longdouble"]):
+        return "    return 0.0;"
+    if normalized in {"char", "wchar_t", "char16_t", "char32_t"}:
+        return "    return 0;"
+    integer_tokens = [
+        "undefined",
+        "byte",
+        "word",
+        "dword",
+        "qword",
+        "int",
+        "long",
+        "short",
+        "size_t",
+        "ssize_t",
+        "intptr_t",
+        "uintptr_t",
+        "uint",
+        "ulong",
+        "ushort",
+    ]
+    if any(token in normalized for token in integer_tokens):
+        return "    return 0;"
+    return "    return {};"
 
 
 def _build_decompiled_map(entries: list[dict[str, object]]) -> dict[str, dict[str, object]]:

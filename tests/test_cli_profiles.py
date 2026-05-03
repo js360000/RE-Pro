@@ -104,6 +104,14 @@ class CliProfileTests(unittest.TestCase):
                         "logs",
                         "--output-folder-map",
                         "recovered_sources=src/recovered",
+                        "--analyzer-include",
+                        "native,frontend",
+                        "--analyzer-exclude",
+                        "ghidra",
+                        "--output-max-run-mb",
+                        "256",
+                        "--output-max-artifacts",
+                        "120",
                     ],
                 ):
                     exit_code = main()
@@ -116,6 +124,10 @@ class CliProfileTests(unittest.TestCase):
             self.assertEqual(output_settings.include, ["usability", "reports"])
             self.assertEqual(output_settings.exclude, ["logs"])
             self.assertEqual(output_settings.folder_map["recovered_sources"], "src/recovered")
+            self.assertEqual(output_settings.analyzer_include, ["native", "frontend"])
+            self.assertEqual(output_settings.analyzer_exclude, ["ghidra"])
+            self.assertEqual(output_settings.max_run_artifact_bytes, 256 * 1024 * 1024)
+            self.assertEqual(output_settings.max_run_artifact_count, 120)
 
     def test_analyze_can_run_from_saved_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

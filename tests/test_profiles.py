@@ -7,6 +7,7 @@ from pathlib import Path
 from tests import _path_setup  # noqa: F401
 
 from re_pro.models import LlmAssistSettings
+from re_pro.models import OutputSettings
 from re_pro.models import RuntimeTraceSettings
 from re_pro.profiles import analysis_settings_from_profile
 from re_pro.profiles import build_analysis_profile
@@ -38,6 +39,14 @@ class ProfileStoreTests(unittest.TestCase):
                         user_task="map main update flow",
                     ),
                     runtime_trace_settings=RuntimeTraceSettings(enabled=True, duration_seconds=12, use_frida=True),
+                    output_settings=OutputSettings(
+                        enabled=True,
+                        profile="source-first",
+                        mode="copy",
+                        include=["usability"],
+                        exclude=["logs"],
+                        folder_map={"recovered_sources": "src/recovered"},
+                    ),
                     report={
                         "target": str(root / "z-code.exe"),
                         "output_dir": str(root / "analysis_output" / "z-code_20260423_170000"),
@@ -61,6 +70,10 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(settings["llm_settings"].auth_provider, "codex-oauth")
             self.assertEqual(settings["llm_settings"].reasoning_effort, "xhigh")
             self.assertEqual(settings["runtime_trace_settings"].duration_seconds, 12)
+            self.assertTrue(settings["output_settings"].enabled)
+            self.assertEqual(settings["output_settings"].profile, "source-first")
+            self.assertEqual(settings["output_settings"].mode, "copy")
+            self.assertEqual(settings["output_settings"].folder_map["recovered_sources"], "src/recovered")
 
             entries = list_profiles(profiles_root=root / "profiles", query="turbopack")
             self.assertEqual(len(entries), 1)

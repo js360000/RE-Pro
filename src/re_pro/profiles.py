@@ -10,6 +10,7 @@ from .models import LlmAssistSettings
 from .models import FrontendSettings
 from .models import LiveProcessSettings
 from .models import PortingSettings
+from .models import OutputSettings
 from .models import RuntimeTraceSettings
 from .utils import ensure_dir
 
@@ -35,6 +36,7 @@ def build_analysis_profile(
     runtime_trace_settings: RuntimeTraceSettings | None = None,
     live_process_settings: LiveProcessSettings | None = None,
     frontend_settings: FrontendSettings | None = None,
+    output_settings: OutputSettings | None = None,
     report: dict[str, Any] | None = None,
     output_dir: str = "",
 ) -> dict[str, Any]:
@@ -43,6 +45,7 @@ def build_analysis_profile(
     runtime_trace_settings = runtime_trace_settings or RuntimeTraceSettings()
     live_process_settings = live_process_settings or LiveProcessSettings()
     frontend_settings = frontend_settings or FrontendSettings()
+    output_settings = output_settings or OutputSettings()
     now = utc_now()
     report = report or {}
     run_summary = {
@@ -72,6 +75,7 @@ def build_analysis_profile(
             "runtime_trace_settings": runtime_trace_settings.to_dict(),
             "live_process_settings": live_process_settings.to_dict(),
             "frontend_settings": frontend_settings.to_dict(),
+            "output_settings": output_settings.to_dict(),
         },
         "last_run": run_summary,
         "search_text": build_profile_search_text(
@@ -279,6 +283,7 @@ def analysis_settings_from_profile(profile: dict[str, Any]) -> dict[str, Any]:
         "runtime_trace_settings": RuntimeTraceSettings.from_dict(settings.get("runtime_trace_settings")),
         "live_process_settings": LiveProcessSettings.from_dict(settings.get("live_process_settings")),
         "frontend_settings": FrontendSettings.from_dict(settings.get("frontend_settings")),
+        "output_settings": OutputSettings.from_dict(settings.get("output_settings")),
     }
 
 

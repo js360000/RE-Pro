@@ -22,6 +22,7 @@ from .mcp_server import main as mcp_server_main
 from .models import LlmAssistSettings
 from .models import FrontendSettings
 from .models import LiveProcessSettings
+from .models import OutputSettings
 from .models import PortingSettings
 from .models import RuntimeTraceSettings
 from .profiles import analysis_settings_from_profile
@@ -48,6 +49,7 @@ DEFAULT_LLM_REASONING = "high"
 DEFAULT_LLM_VERBOSITY = "medium"
 DEFAULT_LLM_MAX_OUTPUT = 128000
 DEFAULT_TRACE_SECONDS = 8
+DEFAULT_OUTPUT_VIEW_NAME = "operator_view"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,6 +95,24 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--port-source-arch", default="", help="Known source architecture, e.g. x86_64")
     analyze.add_argument("--port-target-arch", default="", help="Desired target architecture/source port, e.g. arm64")
     analyze.add_argument("--port-mode", choices=["heuristic", "llm", "hybrid"], default="", help="Architecture porting mode")
+    analyze.add_argument("--output-view", action="store_true", help="Generate a curated operator-facing output view for the run")
+    analyze.add_argument(
+        "--output-profile",
+        choices=["full", "compact", "minimal", "source-first", "tool-first", "rebuild", "custom"],
+        default="full",
+        help="Curated output view preset",
+    )
+    analyze.add_argument("--output-view-name", default=DEFAULT_OUTPUT_VIEW_NAME, help="Subfolder name for the curated output view")
+    analyze.add_argument("--output-view-mode", choices=["reference", "copy"], default="reference", help="Reference original paths or copy selected outputs into the view")
+    analyze.add_argument("--output-include", default="", help="Comma-separated output buckets to include, e.g. reports,recovered_sources,usability")
+    analyze.add_argument("--output-exclude", default="", help="Comma-separated output buckets to exclude from the curated view")
+    analyze.add_argument(
+        "--output-folder-map",
+        action="append",
+        default=[],
+        help="Override a bucket folder with bucket=folder, e.g. recovered_sources=src",
+    )
+    analyze.add_argument("--output-max-copy-mb", type=int, default=512, help="Maximum total bytes to copy when --output-view-mode copy is used")
 
     install_tools = subparsers.add_parser("install-tools", help="Download portable reverse-engineering dependencies")
     install_tools.add_argument("--tools-root", default=DEFAULT_TOOLS_ROOT, help="Installation root for downloaded tools")
@@ -249,6 +269,7 @@ def main() -> int:
         runtime_profile = profile_settings.get("runtime_trace_settings") if profile_settings else RuntimeTraceSettings()
         live_profile = profile_settings.get("live_process_settings") if profile_settings else LiveProcessSettings()
         frontend_profile = profile_settings.get("frontend_settings") if profile_settings else FrontendSettings()
+        output_profile = profile_settings.get("output_settings") if profile_settings else OutputSettings()
         live_process_settings = LiveProcessSettings(
             enabled=bool(args.live_attach or args.live_pid or args.live_process_name or live_profile.enabled),
             pid=int(args.live_pid or live_profile.pid),
@@ -294,6 +315,23 @@ def main() -> int:
         frontend_settings = FrontendSettings(
             beautify_bundles=bool(args.beautify_frontend or frontend_profile.beautify_bundles),
         )
+        output_settings = OutputSettings(
+            enabled=bool(
+                args.output_view
+                or args.output_profile != "full"
+                or args.output_include.strip()
+                or args.output_exclude.strip()
+                or args.output_folder_map
+                or output_profile.enabled
+            ),
+            profile=_merge_value(args.output_profile, "full", output_profile.profile),
+            view_name=_merge_value(args.output_view_name, DEFAULT_OUTPUT_VIEW_NAME, output_profile.view_name),
+            mode=_merge_value(args.output_view_mode, "reference", output_profile.mode),
+            include=_csv_items(args.output_include) or list(output_profile.include),
+            exclude=_csv_items(args.output_exclude) or list(output_profile.exclude),
+            folder_map={**output_profile.folder_map, **_parse_folder_map(args.output_folder_map)},
+            max_copy_bytes=max(1, _merge_value(args.output_max_copy_mb, 512, output_profile.max_copy_bytes // (1024 * 1024))) * 1024 * 1024,
+        )
         if porting_settings.enabled and porting_settings.target_arch:
             port_task = (
                 f"Generate target-architecture porting output for {porting_settings.target_arch}. "
@@ -314,6 +352,7 @@ def main() -> int:
             runtime_trace_settings=runtime_trace_settings,
             live_process_settings=live_process_settings,
             frontend_settings=frontend_settings,
+            output_settings=output_settings,
         )
         report = engine.analyze(target)
         profile_path = save_profile(
@@ -329,6 +368,7 @@ def main() -> int:
                 runtime_trace_settings=runtime_trace_settings,
                 live_process_settings=live_process_settings,
                 frontend_settings=frontend_settings,
+                output_settings=output_settings,
                 report=report.to_dict(),
                 output_dir=report.output_dir,
             ),
@@ -805,6 +845,23 @@ def _merge_value(cli_value, default_value, profile_value):
     if cli_value != default_value:
         return cli_value
     return profile_value if profile_value not in {None, ""} else default_value
+
+
+def _csv_items(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _parse_folder_map(values: list[str]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            continue
+        key, folder = value.split("=", 1)
+        key = key.strip().lower()
+        folder = folder.strip()
+        if key and folder:
+            mapping[key] = folder
+    return mapping
 
 
 def _mcp_launch_details_from_args(args, *, start: bool) -> dict:

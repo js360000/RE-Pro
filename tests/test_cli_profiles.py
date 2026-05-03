@@ -67,6 +67,56 @@ class CliProfileTests(unittest.TestCase):
             self.assertEqual(llm_settings.reasoning_effort, "xhigh")
             self.assertFalse(llm_settings.background)
 
+    def test_analyze_accepts_output_view_options(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "sample.exe"
+            target.write_bytes(b"MZ")
+            report = AnalysisReport(
+                target=str(target),
+                target_type="portable-executable",
+                output_dir=str(root / "analysis_output" / "sample_20260423_180000"),
+            )
+            captured = {}
+
+            class FakeEngine:
+                def __init__(self, *args, **kwargs) -> None:
+                    captured.update(kwargs)
+
+                def analyze(self, target_path):
+                    self.target = target_path
+                    return report
+
+            with patch("re_pro.cli.ReverseEngineeringEngine", FakeEngine):
+                with patch(
+                    "sys.argv",
+                    [
+                        "re-pro",
+                        "analyze",
+                        str(target),
+                        "--output-profile",
+                        "source-first",
+                        "--output-view-mode",
+                        "copy",
+                        "--output-include",
+                        "usability,reports",
+                        "--output-exclude",
+                        "logs",
+                        "--output-folder-map",
+                        "recovered_sources=src/recovered",
+                    ],
+                ):
+                    exit_code = main()
+
+            self.assertEqual(exit_code, 0)
+            output_settings = captured["output_settings"]
+            self.assertTrue(output_settings.enabled)
+            self.assertEqual(output_settings.profile, "source-first")
+            self.assertEqual(output_settings.mode, "copy")
+            self.assertEqual(output_settings.include, ["usability", "reports"])
+            self.assertEqual(output_settings.exclude, ["logs"])
+            self.assertEqual(output_settings.folder_map["recovered_sources"], "src/recovered")
+
     def test_analyze_can_run_from_saved_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

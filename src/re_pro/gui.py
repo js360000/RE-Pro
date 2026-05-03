@@ -46,6 +46,7 @@ from .mcp_launch import stop_mcp_server_process
 from .models import LiveProcessSettings
 from .models import LlmAssistSettings
 from .models import FrontendSettings
+from .models import OutputSettings
 from .models import PortingSettings
 from .models import RuntimeTraceSettings
 from .profiles import analysis_settings_from_profile
@@ -75,6 +76,7 @@ class AnalysisWorker(QThread):
         runtime_trace_settings: RuntimeTraceSettings,
         live_process_settings: LiveProcessSettings,
         frontend_settings: FrontendSettings,
+        output_settings: OutputSettings,
     ) -> None:
         super().__init__()
         self.target = target
@@ -86,6 +88,7 @@ class AnalysisWorker(QThread):
         self.runtime_trace_settings = runtime_trace_settings
         self.live_process_settings = live_process_settings
         self.frontend_settings = frontend_settings
+        self.output_settings = output_settings
 
     def run(self) -> None:
         try:
@@ -99,6 +102,7 @@ class AnalysisWorker(QThread):
                 runtime_trace_settings=self.runtime_trace_settings,
                 live_process_settings=self.live_process_settings,
                 frontend_settings=self.frontend_settings,
+                output_settings=self.output_settings,
             )
             report = engine.analyze(self.target)
             self.completed.emit(report.to_dict())
@@ -298,6 +302,28 @@ class MainWindow(QMainWindow):
         output_row.addWidget(self.output_input)
         output_row.addWidget(browse_output)
 
+        output_view_row = QHBoxLayout()
+        self.output_view_checkbox = QCheckBox("Curated view")
+        self.output_profile_combo = QComboBox()
+        self.output_profile_combo.addItems(["full", "compact", "minimal", "source-first", "tool-first", "rebuild", "custom"])
+        self.output_mode_combo = QComboBox()
+        self.output_mode_combo.addItems(["reference", "copy"])
+        self.output_view_name_input = QLineEdit("operator_view")
+        self.output_view_name_input.setMaximumWidth(150)
+        self.output_include_input = QLineEdit()
+        self.output_include_input.setPlaceholderText("include buckets, comma-separated")
+        self.output_exclude_input = QLineEdit()
+        self.output_exclude_input.setPlaceholderText("exclude buckets")
+        output_view_row.addWidget(self.output_view_checkbox)
+        output_view_row.addWidget(QLabel("Profile"))
+        output_view_row.addWidget(self.output_profile_combo)
+        output_view_row.addWidget(QLabel("Mode"))
+        output_view_row.addWidget(self.output_mode_combo)
+        output_view_row.addWidget(QLabel("Name"))
+        output_view_row.addWidget(self.output_view_name_input)
+        output_view_row.addWidget(self.output_include_input)
+        output_view_row.addWidget(self.output_exclude_input)
+
         profile_row = QHBoxLayout()
         self.profile_name_input = QLineEdit()
         self.profile_name_input.setPlaceholderText("Optional profile name")
@@ -329,6 +355,7 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.open_pe_log_button)
         controls_layout.addRow("Target", target_row)
         controls_layout.addRow("Output Root", output_row)
+        controls_layout.addRow("Output View", output_view_row)
         controls_layout.addRow("Profiles", profile_row)
         controls_layout.addRow("Tools Root", self.tools_input)
 
@@ -920,6 +947,7 @@ class MainWindow(QMainWindow):
             runtime_trace_settings=self._current_runtime_trace_settings(),
             live_process_settings=self._current_live_process_settings(),
             frontend_settings=self._current_frontend_settings(),
+            output_settings=self._current_output_settings(),
         )
         self.worker.progress.connect(self._append_log)
         self.worker.completed.connect(self._handle_report)
@@ -1554,6 +1582,19 @@ class MainWindow(QMainWindow):
             beautify_bundles=self.frontend_beautify_checkbox.isChecked(),
         )
 
+    def _current_output_settings(self) -> OutputSettings:
+        profile = self.output_profile_combo.currentText().strip() or "full"
+        include = self._csv_items(self.output_include_input.text())
+        exclude = self._csv_items(self.output_exclude_input.text())
+        return OutputSettings(
+            enabled=self.output_view_checkbox.isChecked() or profile != "full" or bool(include or exclude),
+            profile=profile,
+            view_name=self.output_view_name_input.text().strip() or "operator_view",
+            mode=self.output_mode_combo.currentText().strip() or "reference",
+            include=include,
+            exclude=exclude,
+        )
+
     def _save_analysis_profile(self, report: dict | None = None) -> str | None:
         target = self.target_input.text().strip()
         output_root = self.output_input.text().strip()
@@ -1574,6 +1615,7 @@ class MainWindow(QMainWindow):
                 runtime_trace_settings=self._current_runtime_trace_settings(),
                 live_process_settings=self._current_live_process_settings(),
                 frontend_settings=self._current_frontend_settings(),
+                output_settings=self._current_output_settings(),
                 report=report,
                 output_dir=str((report or {}).get("output_dir", "")),
             )
@@ -1644,6 +1686,7 @@ class MainWindow(QMainWindow):
         runtime_settings = settings.get("runtime_trace_settings") or RuntimeTraceSettings()
         live_settings = settings.get("live_process_settings") or LiveProcessSettings()
         frontend_settings = settings.get("frontend_settings") or FrontendSettings()
+        output_settings = settings.get("output_settings") or OutputSettings()
         self.frontend_beautify_checkbox.setChecked(frontend_settings.beautify_bundles)
         self.llm_checkbox.setChecked(llm_settings.enabled)
         self.llm_auto_checkbox.setChecked(llm_settings.auto)
@@ -1669,6 +1712,12 @@ class MainWindow(QMainWindow):
         self.live_name_input.setText(live_settings.process_name)
         self.live_memory_checkbox.setChecked(live_settings.dump_memory)
         self.live_max_total_input.setText(str(max(1, live_settings.max_total_bytes // (1024 * 1024))))
+        self.output_view_checkbox.setChecked(output_settings.enabled)
+        self.output_profile_combo.setCurrentText(output_settings.profile)
+        self.output_mode_combo.setCurrentText(output_settings.mode)
+        self.output_view_name_input.setText(output_settings.view_name)
+        self.output_include_input.setText(",".join(output_settings.include))
+        self.output_exclude_input.setText(",".join(output_settings.exclude))
         self.profile_name_input.setText(str(profile.get("name", "")))
         self._load_selected_profile_report()
         self.statusBar().showMessage(f"Loaded profile: {profile.get('name', '')}")
@@ -1719,6 +1768,10 @@ class MainWindow(QMainWindow):
             return int(value)
         except ValueError:
             return default
+
+    @staticmethod
+    def _csv_items(value: str) -> list[str]:
+        return [item.strip() for item in value.split(",") if item.strip()]
 
     @staticmethod
     def _load_artifact_text(report: dict, description_contains: str) -> str:

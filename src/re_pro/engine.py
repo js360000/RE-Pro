@@ -13,8 +13,10 @@ from .models import AnalysisReport
 from .models import FrontendSettings
 from .models import LiveProcessSettings
 from .models import LlmAssistSettings
+from .models import OutputSettings
 from .models import PortingSettings
 from .models import RuntimeTraceSettings
+from .output_organizer import organize_output_view
 from .plugins import build_analyzers, resolve_plugin_dirs
 from .recovery_insights import write_recovery_insights
 from .reporting import write_json_report, write_markdown_report
@@ -69,6 +71,7 @@ class AnalysisContext:
     runtime_trace_settings: RuntimeTraceSettings = field(default_factory=RuntimeTraceSettings)
     live_process_settings: LiveProcessSettings = field(default_factory=LiveProcessSettings)
     frontend_settings: FrontendSettings = field(default_factory=FrontendSettings)
+    output_settings: OutputSettings = field(default_factory=OutputSettings)
 
     def log(self, message: str) -> None:
         if self.logger:
@@ -88,6 +91,7 @@ class ReverseEngineeringEngine:
         runtime_trace_settings: RuntimeTraceSettings | None = None,
         live_process_settings: LiveProcessSettings | None = None,
         frontend_settings: FrontendSettings | None = None,
+        output_settings: OutputSettings | None = None,
         plugin_dirs: list[str | Path] | None = None,
     ) -> None:
         self.output_root = Path(output_root).resolve() if output_root else (Path.cwd() / "analysis_output").resolve()
@@ -99,6 +103,7 @@ class ReverseEngineeringEngine:
         self.runtime_trace_settings = runtime_trace_settings or RuntimeTraceSettings()
         self.live_process_settings = live_process_settings or LiveProcessSettings()
         self.frontend_settings = frontend_settings or FrontendSettings()
+        self.output_settings = output_settings or OutputSettings()
         self.plugin_dirs = resolve_plugin_dirs(plugin_dirs)
         self.analyzers = build_analyzers(plugin_dirs=self.plugin_dirs, logger=self.logger)
 
@@ -119,6 +124,7 @@ class ReverseEngineeringEngine:
             runtime_trace_settings=self.runtime_trace_settings,
             live_process_settings=self.live_process_settings,
             frontend_settings=self.frontend_settings,
+            output_settings=self.output_settings,
         )
         report = AnalysisReport(target=str(target_path), output_dir=str(output_dir))
 
@@ -158,6 +164,15 @@ class ReverseEngineeringEngine:
         report_markdown = write_markdown_report(report, output_dir / "report.md")
         report.add_artifact(str(report_json), "report", "Machine-readable JSON report")
         report.add_artifact(str(report_markdown), "report", "Human-readable markdown report")
+        output_view = organize_output_view(report, output_dir, self.output_settings)
+        if output_view:
+            report.add_artifact(str(output_view["view_root"]), "directory", "Curated operator output view")
+            report.add_artifact(str(output_view["manifest_path"]), "manifest", "Output view manifest")
+            report.add_artifact(str(output_view["readme_path"]), "report", "Output view README")
+            report.add_note(
+                f"Curated output view generated at {output_view['view_root']} "
+                f"({output_view['profile']} profile, {output_view['mode']} mode, {output_view['entry_count']} entries)."
+            )
         write_json_report(report, output_dir / "report.json")
         write_markdown_report(report, output_dir / "report.md")
         self._log(f"Analysis completed. Output written to {output_dir}")
@@ -179,6 +194,7 @@ class ReverseEngineeringEngine:
                 for analyzer in self.analyzers
             ],
             "plugin_dirs": [str(path) for path in self.plugin_dirs],
+            "output_settings": self.output_settings.to_dict(),
         }
         manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         report.add_artifact(str(manifest_path), "manifest", "Analysis pipeline manifest")

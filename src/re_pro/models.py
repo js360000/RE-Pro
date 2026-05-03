@@ -125,6 +125,53 @@ class FrontendSettings:
 
 
 @dataclass
+class OutputSettings:
+    enabled: bool = False
+    profile: str = "full"
+    view_name: str = "operator_view"
+    mode: str = "reference"
+    include: list[str] = field(default_factory=list)
+    exclude: list[str] = field(default_factory=list)
+    folder_map: dict[str, str] = field(default_factory=dict)
+    max_copy_bytes: int = 512 * 1024 * 1024
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object] | None) -> "OutputSettings":
+        payload = payload or {}
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            profile=str(payload.get("profile", "full") or "full"),
+            view_name=str(payload.get("view_name", "operator_view") or "operator_view"),
+            mode=str(payload.get("mode", "reference") or "reference"),
+            include=_string_list(payload.get("include")),
+            exclude=_string_list(payload.get("exclude")),
+            folder_map=_string_map(payload.get("folder_map")),
+            max_copy_bytes=int(payload.get("max_copy_bytes", 512 * 1024 * 1024) or 512 * 1024 * 1024),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def _string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        return []
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def _string_map(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key).strip(): str(item).strip() for key, item in value.items() if str(key).strip() and str(item).strip()}
+
+
+@dataclass
 class AnalysisFinding:
     title: str
     summary: str

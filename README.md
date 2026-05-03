@@ -56,6 +56,7 @@ Bitcoin: `bc1qzyzwkfgfkeu3v44edwxaw0pre2fdvl6nd8hv0w`
 - Bounded package actions for APK signing, Electron repack, Tauri packaging, and patch application.
 - PSARC create/rebuild workflows preserving compression choices, block sizes, file order, and editable extracted overlays.
 - Source-first browser workspaces for viewing and editing recovered files, manifests, archives, executables, JSON resources, PARAM.SFO, and hex/base64 nodes.
+- Curated output views with selectable presets, include/exclude buckets, custom folder maps, and reference-or-copy modes for cleaner operator-facing run folders.
 - Optional GPT-5.5/GPT-5.4-assisted approximation when direct source recovery is weak.
 
 For a more scan-friendly matrix, see [docs/supported-formats.md](docs/supported-formats.md).
@@ -116,6 +117,13 @@ Inspect a completed run's recovery quality, evidence graph, function evidence pa
 
 ```bash
 re-pro inspect-run path\to\analysis_run --query Widget --limit 20
+```
+
+Generate a cleaner operator-facing output tree while preserving the full raw run:
+
+```bash
+re-pro analyze path\to\target.exe -o analysis_output --output-profile source-first --output-view-mode reference
+re-pro analyze path\to\target.exe -o analysis_output --output-profile custom --output-include reports,recovered_sources,usability --output-exclude logs --output-folder-map recovered_sources=src/recovered
 ```
 
 Compare two existing runs:
@@ -327,7 +335,7 @@ Or on this repo's Windows setup:
 launch_gui.bat
 ```
 
-The GUI includes controls for Ghidra and external-tool jobs, frontend beautification, Codex/API-key LLM settings, architecture porting, runtime tracing, live-process attachment, profile save/load, MCP server startup with exact JSON, package actions, workspace browsing, and report/artifact/source inspection.
+The GUI includes controls for Ghidra and external-tool jobs, frontend beautification, curated output views, Codex/API-key LLM settings, architecture porting, runtime tracing, live-process attachment, profile save/load, MCP server startup with exact JSON, package actions, workspace browsing, and report/artifact/source inspection.
 
 ## Output
 
@@ -341,6 +349,7 @@ Each analysis run writes a timestamped folder containing:
 - porting guidance and prepared source bundles
 - recompile templates and manifests
 - recovery quality, evidence graph, offline evidence graph browser, function evidence pages, and stub-elimination manifests
+- optional curated operator output views under folders such as `operator_view`
 - optional diff, patch, and packaging outputs
 - optional `llm_assist`, `mcp_reconstruction`, `runtime_trace`, `live_process`, `browser_workspace`, and frontend source-lift outputs
 

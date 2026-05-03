@@ -1,5 +1,10 @@
 # RE-Pro
 
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+![Interfaces](https://img.shields.io/badge/interfaces-CLI%20%7C%20GUI%20%7C%20MCP-2f6f4e)
+![LLM support](https://img.shields.io/badge/LLM-GPT--5.5%20%7C%20GPT--5.4-1f6feb)
+![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-444)
+
 ![RE-Pro hero](docs/assets/hero.png)
 
 RE-Pro is a cross-platform reverse-engineering workbench built to turn opaque binaries and packaged apps into readable evidence, recovered source, and actionable rebuild workflows.
@@ -21,6 +26,15 @@ Bitcoin: `bc1qzyzwkfgfkeu3v44edwxaw0pre2fdvl6nd8hv0w`
 - Use either OpenAI API keys or Codex ChatGPT OAuth credentials from `.codex/auth.json` for GPT-assisted reconstruction.
 
 ## Highlights
+
+### Repository Tour
+
+- [docs/index.html](docs/index.html) is a GitHub Pages-ready landing page.
+- [docs/supported-formats.md](docs/supported-formats.md) summarizes current executable, archive, package, console, and recovery coverage.
+- [docs/examples/README.md](docs/examples/README.md) defines safe demo-output expectations without committing proprietary samples.
+- [docs/screenshots/README.md](docs/screenshots/README.md) lists screenshot targets for release pages and README updates.
+- [CONTRIBUTING.md](CONTRIBUTING.md) covers local setup, testing, and sample-file hygiene.
+- [SECURITY.md](SECURITY.md) covers vulnerability reporting and binary-handling expectations.
 
 ### Platform and Package Coverage
 
@@ -52,6 +66,8 @@ Bitcoin: `bc1qzyzwkfgfkeu3v44edwxaw0pre2fdvl6nd8hv0w`
 - PSARC create/rebuild workflows preserving compression choices, block sizes, file order, and editable extracted overlays.
 - Source-first browser workspaces for viewing and editing recovered files, manifests, archives, executables, JSON resources, PARAM.SFO, and hex/base64 nodes.
 - Optional GPT-5.5/GPT-5.4-assisted approximation when direct source recovery is weak.
+
+For a more scan-friendly matrix, see [docs/supported-formats.md](docs/supported-formats.md).
 
 ### Interfaces
 
@@ -172,7 +188,7 @@ Install local reverse-engineering dependencies:
 re-pro install-tools
 ```
 
-That tooling surface includes support for Ghidra, rizin, radare2, JADX, apktool, ILSpy, .NET workflows, Frida-oriented runtime tracing, and helper runtimes used by RE-Pro’s analysis and rebuild paths.
+That tooling surface includes support for Ghidra, rizin, radare2, JADX, apktool, ILSpy, .NET workflows, Frida-oriented runtime tracing, and helper runtimes used by RE-Pro's analysis and rebuild paths.
 
 For richer runtime instrumentation:
 
@@ -187,7 +203,7 @@ For optional NVIDIA GDeflate recovery in game pipelines:
 python -m pip install nvidia-nvcomp-cu12
 ```
 
-For remote symbol acquisition, RE-Pro uses Microsoft’s public symbol server by default. To override or extend the server list:
+For remote symbol acquisition, RE-Pro uses Microsoft's public symbol server by default. To override or extend the server list:
 
 ```bash
 set RE_PRO_SYMBOL_SERVERS=https://msdl.microsoft.com/download/symbols/;https://your-symbol-server.example/symbols/
@@ -281,7 +297,7 @@ The MCP surface exposes:
 - Package rebuild, signing, and patch execution through `run_packaging_action`.
 - Client-side sampling workflows through `approximate_source_with_sampling`.
 
-This makes MCP a genuine alternative to direct API integration: an external LLM can inspect the graph, browse evidence, write grounded approximations, validate them locally, and drive rebuild steps through RE-Pro’s own execution surface.
+This makes MCP a genuine alternative to direct API integration: an external LLM can inspect the graph, browse evidence, write grounded approximations, validate them locally, and drive rebuild steps through RE-Pro's own execution surface.
 
 ## GUI
 
@@ -291,7 +307,7 @@ Launch the desktop GUI with:
 re-pro-gui
 ```
 
-Or on this repo’s Windows setup:
+Or on this repo's Windows setup:
 
 ```bash
 launch_gui.bat
@@ -315,7 +331,7 @@ Each analysis run writes a timestamped folder containing:
 
 ## GitHub Pages
 
-The repo includes a GitHub Pages-ready public landing page under [docs/index.html](docs/index.html). If Pages is configured to publish from `docs/`, that page can act as the project’s public product site.
+The repo includes a GitHub Pages-ready public landing page under [docs/index.html](docs/index.html). If Pages is configured to publish from `docs/`, that page can act as the project's public product site.
 
 ## Plugins
 

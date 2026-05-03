@@ -96,6 +96,8 @@ def build_parser() -> argparse.ArgumentParser:
     install_tools = subparsers.add_parser("install-tools", help="Download portable reverse-engineering dependencies")
     install_tools.add_argument("--tools-root", default=DEFAULT_TOOLS_ROOT, help="Installation root for downloaded tools")
 
+    subparsers.add_parser("gui", help="Launch the RE-Pro desktop GUI")
+
     compare_runs = subparsers.add_parser("compare-runs", help="Compare two analysis run directories")
     compare_runs.add_argument("base_run", help="Base analysis run directory")
     compare_runs.add_argument("head_run", help="Head analysis run directory")
@@ -338,6 +340,10 @@ def main() -> int:
         result = installer.install_all()
         print(json.dumps(result, indent=2))
         return 0
+    if args.command == "gui":
+        from .gui import main as gui_main
+
+        return gui_main()
     if args.command == "live-process":
         if args.live_command == "list":
             processes = list_live_processes(args.query, limit=args.limit)

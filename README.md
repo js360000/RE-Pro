@@ -90,6 +90,22 @@ re-pro install-tools
 re-pro analyze path\to\target.exe -o analysis_output --external-tools
 ```
 
+## Windows Releases
+
+Windows release archives contain a compiled executable plus convenience wrappers:
+
+- `re-pro.exe` for the CLI, package actions, MCP server, and GUI launcher.
+- `re-pro-gui.cmd` to launch `re-pro.exe gui`.
+- `re-pro-mcp.cmd` to launch `re-pro.exe mcp-server`.
+
+To build the Windows release artifacts locally:
+
+```powershell
+C:\path\to\python311.exe -m venv .release-venv
+.\.release-venv\Scripts\python.exe -m pip install -e . pyinstaller build
+.\scripts\build_windows_release.ps1 -Python .\.release-venv\Scripts\python.exe
+```
+
 ## CLI
 
 Analyze a target:

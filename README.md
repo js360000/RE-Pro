@@ -27,15 +27,6 @@ Bitcoin: `bc1qzyzwkfgfkeu3v44edwxaw0pre2fdvl6nd8hv0w`
 
 ## Highlights
 
-### Repository Tour
-
-- [docs/index.html](docs/index.html) is a GitHub Pages-ready landing page.
-- [docs/supported-formats.md](docs/supported-formats.md) summarizes current executable, archive, package, console, and recovery coverage.
-- [docs/examples/README.md](docs/examples/README.md) defines safe demo-output expectations without committing proprietary samples.
-- [docs/screenshots/README.md](docs/screenshots/README.md) lists screenshot targets for release pages and README updates.
-- [CONTRIBUTING.md](CONTRIBUTING.md) covers local setup, testing, and sample-file hygiene.
-- [SECURITY.md](SECURITY.md) covers vulnerability reporting and binary-handling expectations.
-
 ### Platform and Package Coverage
 
 - Windows: PE, MSI, NSIS, Inno, CAB, .NET apphosts and bundles, PDB workflows, PE resources, native/game/UI heuristics.
@@ -344,10 +335,6 @@ Each analysis run writes a timestamped folder containing:
 - recompile templates and manifests
 - optional diff, patch, and packaging outputs
 - optional `llm_assist`, `mcp_reconstruction`, `runtime_trace`, `live_process`, `browser_workspace`, and frontend source-lift outputs
-
-## GitHub Pages
-
-The repo includes a GitHub Pages-ready public landing page under [docs/index.html](docs/index.html). If Pages is configured to publish from `docs/`, that page can act as the project's public product site.
 
 ## Plugins
 

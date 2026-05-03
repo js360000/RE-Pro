@@ -1076,6 +1076,7 @@ class ExternalToolAnalyzer(Analyzer):
                         "source_path": class_entry.get("source_path"),
                         "base_classes": class_entry.get("base_classes"),
                         "estimated_object_size": class_entry.get("estimated_object_size"),
+                        "members": class_entry.get("members"),
                         "methods": methods,
                         "call_edges": class_edges[:512],
                         "recovery_capabilities": class_entry.get("recovery_capabilities"),

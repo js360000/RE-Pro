@@ -1196,6 +1196,53 @@ class MsvcPseudoCppTests(unittest.TestCase):
         self.assertIn("fixture_benchmark_regression", worker["recovery_capabilities"])
         self.assertEqual(enriched["cross_tool_fusion"]["primary_decompiler"], "ghidra")
 
+    def test_write_pseudo_class_sources_rewrites_pointer_offset_member_accesses(self) -> None:
+        recovered = {
+            "machine": "x64",
+            "classes": [
+                {
+                    "name": "Fixture::Worker",
+                    "kind": "class",
+                    "mangled_name": ".?AVWorker@Fixture@@",
+                    "type_descriptor_rva": "0x2000",
+                    "base_classes": [],
+                    "methods": [
+                        {"name": "vf_140003000", "slot": 0, "address": "0x140003000", "vtable_rva": "0x2128"},
+                    ],
+                }
+            ],
+        }
+        decompiled_entries = [
+            {
+                "entry_point": "0x140003000",
+                "name": "sub_140003000",
+                "namespace": "Fixture::Worker",
+                "signature": "int sub_140003000(Fixture::Worker *this)",
+                "return_type": "int",
+                "parameters": [{"name": "this", "data_type": "Fixture::Worker *"}],
+                "decompile_success": True,
+                "decompiled_c": (
+                    "int sub_140003000(Fixture::Worker *this)\n"
+                    "{\n"
+                    "  *(undefined4 *)(this + 0x10) = *(undefined4 *)(this + 0x10) + 1;\n"
+                    "  return *(undefined4 *)(this + 0x10);\n"
+                    "}"
+                ),
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            write_pseudo_class_sources(Path(temp_dir), recovered, decompiled_entries=decompiled_entries)
+
+            header_text = (Path(temp_dir) / "Fixture__Worker.hpp").read_text(encoding="utf-8")
+            source_text = (Path(temp_dir) / "Fixture__Worker.cpp").read_text(encoding="utf-8")
+
+            self.assertIn("undefined4 field_10; // inferred from this_pointer_offset_access", header_text)
+            self.assertIn("approx +0x10", header_text)
+            self.assertIn("this->field_10 = this->field_10 + 1;", source_text)
+            self.assertIn("return this->field_10;", source_text)
+            self.assertNotIn("*(undefined4 *)(this + 0x10)", source_text)
+
 
 if __name__ == "__main__":
     unittest.main()

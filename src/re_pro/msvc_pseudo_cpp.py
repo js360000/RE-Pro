@@ -216,7 +216,7 @@ def render_class_source(
             lines.append(f"    // Decompiled from Ghidra function: {ghidra_name}")
         if ghidra_signature:
             lines.append(f"    // Original Ghidra signature: {ghidra_signature}")
-        body = _method_body(decompiled_entry)
+        body = _method_body(decompiled_entry, class_entry)
         if body:
             lines.extend(body.splitlines())
         else:
@@ -261,7 +261,7 @@ def _definition_signature(
     return f"{return_type} {class_name}::{display_name}({params})"
 
 
-def _method_body(decompiled_entry: dict[str, object] | None) -> str:
+def _method_body(decompiled_entry: dict[str, object] | None, class_entry: dict[str, object] | None = None) -> str:
     if not decompiled_entry or not decompiled_entry.get("decompile_success"):
         return ""
     decompiled_c = str(decompiled_entry.get("decompiled_c") or "").strip()
@@ -274,6 +274,7 @@ def _method_body(decompiled_entry: dict[str, object] | None) -> str:
     body = decompiled_c[start + 1 : end].strip("\r\n")
     if not body.strip():
         return ""
+    body = _rewrite_body_member_accesses(body, class_entry or {})
     return "\n".join(f"    {line.rstrip()}" if line.strip() else "" for line in body.splitlines())
 
 
@@ -286,6 +287,120 @@ def _build_decompiled_map(entries: list[dict[str, object]]) -> dict[str, dict[st
         if address:
             result[address] = entry
     return result
+
+
+def _rewrite_body_member_accesses(body: str, class_entry: dict[str, object]) -> str:
+    if not body or not isinstance(class_entry, dict):
+        return body
+    aliases = _member_access_aliases(class_entry)
+    if not aliases:
+        return body
+    rewritten = body
+
+    def replace_pointer_offset(match: re.Match[str]) -> str:
+        type_text = str(match.group("type") or "").strip()
+        offset = _parse_int_literal(match.group("offset"))
+        member = aliases.get(offset)
+        if member is None:
+            return match.group(0)
+        member_name = str(member.get("name") or "").strip()
+        if not member_name:
+            return match.group(0)
+        expected_type = str(member.get("type") or "").strip()
+        if type_text and expected_type and not _member_access_type_compatible(type_text, expected_type):
+            return match.group(0)
+        return f"this->{member_name}"
+
+    rewritten = re.sub(
+        r"\*\(\s*(?P<type>[A-Za-z_:][A-Za-z0-9_:<>,\s\*&]+?)\s*\*\s*\)\s*\(\s*(?:\([^)]*\)\s*)?this\s*\+\s*(?P<offset>0x[0-9a-fA-F]+|\d+)\s*\)",
+        replace_pointer_offset,
+        rewritten,
+    )
+    rewritten = re.sub(
+        r"\*\(\s*(?P<type>[A-Za-z_:][A-Za-z0-9_:<>,\s\*&]+?)\s*\*\s*\)\s*\(\s*(?P<offset>0x[0-9a-fA-F]+|\d+)\s*\+\s*(?:\([^)]*\)\s*)?this\s*\)",
+        replace_pointer_offset,
+        rewritten,
+    )
+
+    for offset, member in sorted(aliases.items(), key=lambda item: -item[0]):
+        member_name = str(member.get("name") or "").strip()
+        if not member_name:
+            continue
+        offset_hex = f"0x{offset:x}"
+        generic_patterns = [
+            rf"\bthis->field_{offset_hex}\b",
+            rf"\bthis->field_{offset:x}\b",
+            rf"\bthis->mbr_{offset_hex}\b",
+            rf"\bthis->mbr_{offset:x}\b",
+            rf"\bthis->field{offset_hex}\b",
+        ]
+        for pattern in generic_patterns:
+            rewritten = re.sub(pattern, f"this->{member_name}", rewritten, flags=re.IGNORECASE)
+    return rewritten
+
+
+def _member_access_aliases(class_entry: dict[str, object]) -> dict[int, dict[str, object]]:
+    aliases: dict[int, dict[str, object]] = {}
+    for member in class_entry.get("members") or []:
+        if not isinstance(member, dict):
+            continue
+        member_name = str(member.get("name") or "").strip()
+        if not member_name:
+            continue
+        offset = member.get("estimated_offset")
+        if isinstance(offset, int) and offset >= 0:
+            aliases[offset] = member
+        for provenance in member.get("layout_provenance") or []:
+            if not isinstance(provenance, dict):
+                continue
+            observed_offset = _parse_int_literal(provenance.get("observed_offset"))
+            if observed_offset is not None and observed_offset >= 0:
+                aliases.setdefault(observed_offset, member)
+    return aliases
+
+
+def _parse_int_literal(value: object) -> int | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    try:
+        return int(text, 0)
+    except ValueError:
+        return None
+
+
+def _member_access_type_compatible(access_type: str, member_type: str) -> bool:
+    access = str(access_type or "").strip().lower().replace(" ", "")
+    member = str(member_type or "").strip().lower().replace(" ", "")
+    if not access or not member:
+        return True
+    if access in member or member in access:
+        return True
+    width_types = {
+        "undefined8": 8,
+        "longlong": 8,
+        "ulonglong": 8,
+        "uint64_t": 8,
+        "qword": 8,
+        "undefined4": 4,
+        "int": 4,
+        "uint": 4,
+        "dword": 4,
+        "undefined2": 2,
+        "short": 2,
+        "word": 2,
+        "undefined1": 1,
+        "char": 1,
+        "byte": 1,
+        "bool": 1,
+    }
+    access_width = next((width for token, width in width_types.items() if token in access), None)
+    member_width = next((width for token, width in width_types.items() if token in member), None)
+    if access_width is not None and member_width is not None:
+        return access_width == member_width
+    if "*" in access or "*" in member:
+        return True
+    return False
 
 
 def _annotate_shared_vtable_targets(class_entry: dict[str, object]) -> None:
@@ -1785,7 +1900,11 @@ def _annotate_class_layout(
         estimated_size = _estimate_type_size(member_type, class_size_hints, pointer_size)
         if estimated_size <= 0:
             estimated_size = pointer_size
-        offset = _align_value(offset, min(pointer_size, max(1, estimated_size)))
+        explicit_offset = _member_observed_offset(member)
+        if explicit_offset is not None and explicit_offset >= 0:
+            offset = explicit_offset
+        else:
+            offset = _align_value(offset, min(pointer_size, max(1, estimated_size)))
         member["layout_index"] = index
         member["estimated_offset"] = offset
         member["estimated_size"] = estimated_size
@@ -1800,6 +1919,21 @@ def _annotate_class_layout(
     tail_padding = estimated_object_size - offset
     if tail_padding > 0:
         class_entry["estimated_tail_padding"] = tail_padding
+
+
+def _member_observed_offset(member: dict[str, object]) -> int | None:
+    for provenance in member.get("layout_provenance") or []:
+        if not isinstance(provenance, dict):
+            continue
+        observed_offset = _parse_int_literal(provenance.get("observed_offset"))
+        if observed_offset is not None:
+            return observed_offset
+    primary = member.get("primary_provenance")
+    if isinstance(primary, dict):
+        observed_offset = _parse_int_literal(primary.get("observed_offset"))
+        if observed_offset is not None:
+            return observed_offset
+    return None
 
 
 def _build_class_size_hints(
@@ -2041,6 +2175,31 @@ def _infer_member_evidence(
                 match.end(),
             )
         )
+    for match in re.finditer(
+        r"\*\(\s*(?P<type>[A-Za-z_:][A-Za-z0-9_:<>,\s\*&]+?)\s*\*\s*\)\s*\(\s*(?:\([^)]*\)\s*)?this\s*\+\s*(?P<offset>0x[0-9a-fA-F]+|\d+)\s*\)",
+        decompiled_c,
+    ):
+        offset = _parse_int_literal(match.group("offset"))
+        if offset is None:
+            continue
+        member_type = _normalize_member_access_type(match.group("type"))
+        if not member_type:
+            continue
+        member_name = _member_name_for_offset(offset)
+        evidence.append(
+            _make_member_evidence(
+                method,
+                member_name,
+                member_type,
+                "this_pointer_offset_access",
+                source_priority,
+                appearance.get(member_name, 999),
+                decompiled_c,
+                match.start(),
+                match.end(),
+                observed_offset=offset,
+            )
+        )
     member_match = re.search(r"return\s+\([^)]*\)\s*&this->([A-Za-z_]\w*)\s*;", decompiled_c)
     if member_match is None:
         member_match = re.search(r"return\s+&this->([A-Za-z_]\w*)\s*;", decompiled_c)
@@ -2074,6 +2233,7 @@ def _make_member_evidence(
     decompiled_c: str,
     start: int,
     end: int,
+    observed_offset: int | None = None,
 ) -> dict[str, object]:
     source_function = str(method.get("display_name") or method.get("name") or "").strip()
     source_kind = str(method.get("method_kind") or "").strip() or "helper_method"
@@ -2087,6 +2247,7 @@ def _make_member_evidence(
         "statement": _statement_snippet(decompiled_c, start, end),
         "source_priority": source_priority,
         "appearance_index": appearance_index,
+        "observed_offset": f"0x{observed_offset:x}" if observed_offset is not None else None,
     }
 
 
@@ -2119,7 +2280,7 @@ def _best_member_evidence(evidences: list[dict[str, object]]) -> dict[str, objec
 def _serialize_member_provenance(evidence: dict[str, object] | None) -> dict[str, object] | None:
     if not isinstance(evidence, dict):
         return None
-    return {
+    payload = {
         "source_function": str(evidence.get("source_function") or "").strip(),
         "source_kind": str(evidence.get("source_kind") or "").strip(),
         "reason": str(evidence.get("reason") or "").strip(),
@@ -2127,6 +2288,9 @@ def _serialize_member_provenance(evidence: dict[str, object] | None) -> dict[str
         "appearance_index": int(evidence.get("appearance_index", 999)),
         "source_priority": int(evidence.get("source_priority", 9)),
     }
+    if evidence.get("observed_offset"):
+        payload["observed_offset"] = str(evidence.get("observed_offset"))
+    return payload
 
 
 def _serialize_member_provenance_list(evidences: list[dict[str, object]], limit: int = 8) -> list[dict[str, object]]:
@@ -2201,6 +2365,26 @@ def _infer_member_type_from_return(
     if any(_class_names_match(pointed, known_class) for known_class in class_hierarchy):
         return pointed
     return pointed
+
+
+def _member_name_for_offset(offset: int) -> str:
+    return f"field_{offset:x}"
+
+
+def _normalize_member_access_type(type_text: str) -> str:
+    text = " ".join(str(type_text or "").strip().split())
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered in {"undefined8", "ulonglong", "longlong", "qword"}:
+        return "undefined8"
+    if lowered in {"undefined4", "uint", "int", "dword"}:
+        return "undefined4"
+    if lowered in {"undefined2", "ushort", "short", "word"}:
+        return "undefined2"
+    if lowered in {"undefined1", "byte", "char", "bool"}:
+        return "undefined1"
+    return text
 
 
 def _infer_assignment_member_type(rhs: str) -> str:

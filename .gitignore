@@ -12,6 +12,8 @@ venv/
 build/
 dist/
 *.egg-info/
+samples/
+samples_real/
 samples/fixtures/*/build/
 
 # Local tools and helper builds
@@ -50,3 +52,8 @@ Thumbs.db
 
 # Local downloaded installers
 kiro-ide-*.exe
+OpenCode*.exe
+opencode*.exe
+
+# Local planning/artifact notes
+VERSATILITY_ROADMAP.md

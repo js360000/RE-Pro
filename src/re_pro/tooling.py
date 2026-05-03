@@ -64,9 +64,17 @@ COMMON_WINDOWS_PATTERNS: dict[str, list[str]] = {
     ],
     "llvm-objdump": [
         r"C:\Program Files\LLVM\bin\llvm-objdump.exe",
+        r"C:\msys64\clangarm64\bin\llvm-objdump.exe",
+        r"C:\msys64\mingw64\bin\llvm-objdump.exe",
+        r"C:\msys64\ucrt64\bin\llvm-objdump.exe",
+        r"C:\msys64\clang64\bin\llvm-objdump.exe",
     ],
     "llvm-nm": [
         r"C:\Program Files\LLVM\bin\llvm-nm.exe",
+        r"C:\msys64\clangarm64\bin\llvm-nm.exe",
+        r"C:\msys64\mingw64\bin\llvm-nm.exe",
+        r"C:\msys64\ucrt64\bin\llvm-nm.exe",
+        r"C:\msys64\clang64\bin\llvm-nm.exe",
     ],
     "llvm-pdbutil": [
         r"C:\Program Files\LLVM\bin\llvm-pdbutil.exe",
@@ -82,6 +90,18 @@ COMMON_WINDOWS_PATTERNS: dict[str, list[str]] = {
         r"C:\msys64\ucrt64\bin\g++.exe",
         r"C:\msys64\clang64\bin\g++.exe",
         r"C:\mingw64\bin\g++.exe",
+    ],
+    "nm": [
+        r"C:\msys64\mingw64\bin\nm.exe",
+        r"C:\msys64\ucrt64\bin\nm.exe",
+        r"C:\msys64\clang64\bin\nm.exe",
+        r"C:\mingw64\bin\nm.exe",
+    ],
+    "objdump": [
+        r"C:\msys64\mingw64\bin\objdump.exe",
+        r"C:\msys64\ucrt64\bin\objdump.exe",
+        r"C:\msys64\clang64\bin\objdump.exe",
+        r"C:\mingw64\bin\objdump.exe",
     ],
     "cl": [
         r"C:\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe",
@@ -412,7 +432,7 @@ def _build_env() -> dict[str, str]:
         dotnet_root = str(Path(dotnet_executable).parent)
         env.setdefault("DOTNET_ROOT", dotnet_root)
         env.setdefault("DOTNET_ROOT_ARM64", dotnet_root)
-    for executable in ("g++", "clang++", "cl"):
+    for executable in ("g++", "clang++", "cl", "nm", "objdump", "llvm-nm", "llvm-objdump"):
         resolved = _resolve_executable(executable)
         if not resolved:
             continue

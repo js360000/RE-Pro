@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -126,6 +127,89 @@ class GuiProfileTests(unittest.TestCase):
 
             window.ghidra_log_window.close()
             window.pe_log_window.close()
+            window.close()
+
+    def test_gui_exposes_quality_jobs_and_function_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "analysis_output" / "demo_usability"
+            usability_dir = output_dir / "usability"
+            usability_dir.mkdir(parents=True, exist_ok=True)
+            index_path = output_dir / "analysis_index.json"
+            quality_md = usability_dir / "recovery_quality.md"
+            quality_json = usability_dir / "recovery_quality.json"
+            graph_json = usability_dir / "evidence_graph.json"
+            stub_queue_json = usability_dir / "stub_elimination_queue.json"
+            index_payload = {
+                "summary": {"entity_counts": {"function": 1, "class": 1}, "relation_count": 1},
+                "entities": [
+                    {
+                        "kind": "function",
+                        "key": "ghidra:0x140001000",
+                        "label": "Widget::Render",
+                        "attributes": {
+                            "tool": "ghidra",
+                            "address": "0x140001000",
+                            "class_name": "Widget",
+                            "decompiled_c": "int Widget_Render(void) { return 1; }",
+                        },
+                    },
+                    {"kind": "class", "key": "msvc_rtti:widget", "label": "Widget", "attributes": {}},
+                ],
+                "relations": [
+                    {"source": "class:msvc_rtti:widget", "predicate": "declares_method_candidate", "target": "function:ghidra:0x140001000"}
+                ],
+            }
+            index_path.write_text(json.dumps(index_payload, indent=2), encoding="utf-8")
+            quality_md.write_text("# Recovery Quality Dashboard\n\n- Functions indexed: 1\n", encoding="utf-8")
+            quality_json.write_text(json.dumps({"summary": {"function_count": 1}}, indent=2), encoding="utf-8")
+            graph_json.write_text(json.dumps({"top_hubs": []}, indent=2), encoding="utf-8")
+            stub_queue_json.write_text(
+                json.dumps(
+                    {
+                        "summary": {"target_count": 1},
+                        "targets": [
+                            {
+                                "kind": "function",
+                                "priority": 90,
+                                "label": "sub_140001000",
+                                "entity_id": "function:ghidra:0x140001000",
+                                "reason": "generic function name",
+                            }
+                        ],
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            report = {
+                "target": str(root / "demo.exe"),
+                "target_type": "portable-executable",
+                "output_dir": str(output_dir),
+                "frameworks": [],
+                "findings": [],
+                "artifacts": [
+                    {"path": str(index_path), "category": "manifest", "description": "Unified analysis index"},
+                    {"path": str(quality_md), "category": "report", "description": "Recovery quality dashboard"},
+                    {"path": str(quality_json), "category": "manifest", "description": "Recovery quality manifest"},
+                    {"path": str(graph_json), "category": "manifest", "description": "Evidence graph manifest"},
+                    {"path": str(stub_queue_json), "category": "manifest", "description": "Stub elimination queue"},
+                ],
+                "recovered_sources": [],
+                "notes": [],
+            }
+
+            window = MainWindow()
+            window._display_report(report)
+
+            self.assertIn("Recovery Quality Dashboard", window.quality_text.toPlainText())
+            self.assertEqual(window.function_evidence_table.rowCount(), 1)
+            window.function_evidence_table.selectRow(0)
+            window._show_selected_function_evidence()
+            self.assertIn("Widget::Render", window.function_evidence_detail.toPlainText())
+            self.assertIn("decompiler-backed", window.function_evidence_detail.toPlainText())
+            self.assertGreaterEqual(window.job_center_table.rowCount(), 1)
+            self.assertIn("generic function name", window.job_center_detail.toPlainText())
             window.close()
 
 

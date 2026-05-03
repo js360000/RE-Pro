@@ -63,6 +63,7 @@ For a more scan-friendly matrix, see [docs/supported-formats.md](docs/supported-
 ### Interfaces
 
 - PyQt5 desktop GUI for reports, artifacts, recovered sources, and graph-driven pivots.
+- Dedicated GUI surfaces for function evidence, recovery quality, background/stub jobs, live LLM status, and source-first file editing.
 - CLI for analysis, live-process capture, source browsing/editing, architecture-port generation, profiles, comparison, patch-bundle creation, packaging actions, MCP launch details, and tooling install.
 - MCP server exposing analysis, graph search, reconstruction, validation, diff, rebuild, and packaging workflows to external LLM clients.
 - Saved JSON profiles for repeatable analysis and package-action runs.
@@ -333,6 +334,7 @@ Each analysis run writes a timestamped folder containing:
 - recovered sources and extracted artifacts
 - porting guidance and prepared source bundles
 - recompile templates and manifests
+- recovery quality, evidence graph, and stub-elimination manifests
 - optional diff, patch, and packaging outputs
 - optional `llm_assist`, `mcp_reconstruction`, `runtime_trace`, `live_process`, `browser_workspace`, and frontend source-lift outputs
 

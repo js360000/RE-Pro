@@ -268,6 +268,8 @@ class MainWindow(QMainWindow):
         self._mcp_details: dict | None = None
         self._browser_manifest: dict | None = None
         self._current_browser_node_id: str = ""
+        self._function_evidence_entities: list[dict] = []
+        self._job_center_rows: list[dict] = []
         self.ghidra_log_window: BackgroundLogWindow | None = None
         self.pe_log_window: BackgroundLogWindow | None = None
         self.llm_refresh_timer = QTimer(self)
@@ -585,6 +587,54 @@ class MainWindow(QMainWindow):
         index_layout.addWidget(self.index_summary_text)
         index_layout.addWidget(index_splitter)
 
+        function_panel = QWidget()
+        function_layout = QVBoxLayout(function_panel)
+        function_filter_row = QHBoxLayout()
+        self.function_search_input = QLineEdit()
+        self.function_search_input.setPlaceholderText("Search functions, classes, addresses, tool provenance, or confidence")
+        self.function_confidence_combo = QComboBox()
+        self.function_confidence_combo.addItems(["All", "high", "medium", "low"])
+        function_filter_row.addWidget(QLabel("Search"))
+        function_filter_row.addWidget(self.function_search_input)
+        function_filter_row.addWidget(QLabel("Confidence"))
+        function_filter_row.addWidget(self.function_confidence_combo)
+        self.function_evidence_table = QTableWidget(0, 6)
+        self.function_evidence_table.setHorizontalHeaderLabels(["Label", "Address", "Class", "Tool", "Confidence", "Provenance"])
+        self.function_evidence_table.horizontalHeader().setStretchLastSection(True)
+        self.function_evidence_table.itemSelectionChanged.connect(self._show_selected_function_evidence)
+        self.function_evidence_detail = QPlainTextEdit()
+        self.function_evidence_detail.setReadOnly(True)
+        function_splitter = QSplitter(Qt.Vertical)
+        function_splitter.addWidget(self.function_evidence_table)
+        function_splitter.addWidget(self.function_evidence_detail)
+        function_splitter.setSizes([360, 260])
+        function_layout.addLayout(function_filter_row)
+        function_layout.addWidget(function_splitter)
+
+        quality_panel = QWidget()
+        quality_layout = QVBoxLayout(quality_panel)
+        self.quality_text = QTextEdit()
+        self.quality_text.setReadOnly(True)
+        quality_layout.addWidget(self.quality_text)
+
+        jobs_panel = QWidget()
+        jobs_layout = QVBoxLayout(jobs_panel)
+        self.job_center_table = QTableWidget(0, 5)
+        self.job_center_table.setHorizontalHeaderLabels(["Type", "State", "Priority", "Label", "Path"])
+        self.job_center_table.horizontalHeader().setStretchLastSection(True)
+        self.job_center_table.itemSelectionChanged.connect(self._show_selected_job_center_item)
+        self.job_center_detail = QPlainTextEdit()
+        self.job_center_detail.setReadOnly(True)
+        job_actions = QHBoxLayout()
+        self.job_center_open_button = QPushButton("Open Selected")
+        self.job_center_preview_button = QPushButton("Preview Selected")
+        job_actions.addWidget(self.job_center_open_button)
+        job_actions.addWidget(self.job_center_preview_button)
+        job_actions.addStretch(1)
+        jobs_layout.addWidget(self.job_center_table)
+        jobs_layout.addWidget(self.job_center_detail)
+        jobs_layout.addLayout(job_actions)
+
         self.json_text = QPlainTextEdit()
         self.json_text.setReadOnly(True)
 
@@ -668,6 +718,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.sources_tree, "Recovered Sources")
         self.tabs.addTab(browser_panel, "File Browser")
         self.tabs.addTab(index_panel, "Analysis Index")
+        self.tabs.addTab(function_panel, "Function Evidence")
+        self.tabs.addTab(quality_panel, "Quality")
+        self.tabs.addTab(jobs_panel, "Job Center")
         self.tabs.addTab(self.json_text, "JSON")
         self.tabs.addTab(profiles_panel, "Profiles")
         self.tabs.addTab(self.history_list, "History")
@@ -702,6 +755,10 @@ class MainWindow(QMainWindow):
         self.index_sources_button.clicked.connect(self._show_index_workflow_sources)
         self.index_porting_button.clicked.connect(self._open_index_porting_target)
         self.index_recompile_button.clicked.connect(self._open_index_recompile_target)
+        self.function_search_input.textChanged.connect(self._refresh_function_evidence_table)
+        self.function_confidence_combo.currentTextChanged.connect(self._refresh_function_evidence_table)
+        self.job_center_open_button.clicked.connect(self._open_selected_job_center_item)
+        self.job_center_preview_button.clicked.connect(self._preview_selected_job_center_item)
         self.browser_refresh_button.clicked.connect(self._refresh_browser)
         self.browser_open_button.clicked.connect(self._open_current_browser_node_path)
         self.browser_save_button.clicked.connect(self._save_browser_node)
@@ -1342,6 +1399,9 @@ class MainWindow(QMainWindow):
         self._populate_sources(report)
         self._populate_browser(report)
         self._populate_index(report)
+        self._populate_function_evidence(report)
+        self._populate_quality(report)
+        self._populate_job_center(report)
         self._update_background_job_views(report)
         self.json_text.setPlainText(json.dumps(report, indent=2))
         self._current_report = report
@@ -1697,6 +1757,239 @@ class MainWindow(QMainWindow):
         )
         self.index_summary_text.setPlainText(summary_text)
         self._refresh_index_table()
+
+    def _populate_quality(self, report: dict) -> None:
+        dashboard = self._load_artifact_text(report, "Recovery quality dashboard")
+        manifest = self._load_artifact_json(report, "Recovery quality manifest")
+        graph = self._load_artifact_json(report, "Evidence graph manifest")
+        parts: list[str] = []
+        if dashboard:
+            parts.append(dashboard.strip())
+        if manifest:
+            parts.extend(["", "## Machine Manifest", "", "```json", json.dumps(manifest, indent=2), "```"])
+        if graph:
+            parts.extend(["", "## Evidence Graph", "", "```json", json.dumps(graph, indent=2), "```"])
+        if not parts:
+            parts.append("No recovery quality manifest is available for this report.")
+        self._set_markdown_text(self.quality_text, "\n".join(parts).strip())
+
+    def _populate_job_center(self, report: dict) -> None:
+        rows: list[dict] = []
+        for artifact in report.get("artifacts") or []:
+            description = str(artifact.get("description", ""))
+            path = str(artifact.get("path", ""))
+            if "status" not in description.lower():
+                continue
+            payload = self._read_json_file(self._path_or_none(path)) or {}
+            rows.append(
+                {
+                    "type": self._job_type_from_description(description),
+                    "state": str(payload.get("state", "artifact")),
+                    "priority": "",
+                    "label": description,
+                    "path": path,
+                    "detail": payload,
+                }
+            )
+        stub_queue = self._load_artifact_json(report, "Stub elimination queue") or {}
+        for target in stub_queue.get("targets") or []:
+            path = str(target.get("path") or target.get("source_path") or "")
+            rows.append(
+                {
+                    "type": f"stub:{target.get('kind', 'target')}",
+                    "state": "queued",
+                    "priority": str(target.get("priority", "")),
+                    "label": str(target.get("label") or target.get("entity_id") or path),
+                    "path": path,
+                    "detail": target,
+                }
+            )
+        self._job_center_rows = rows
+        self.job_center_table.setRowCount(len(rows))
+        for row, item in enumerate(rows):
+            values = [item["type"], item["state"], item["priority"], item["label"], item["path"]]
+            for column, value in enumerate(values):
+                table_item = QTableWidgetItem(str(value))
+                table_item.setData(Qt.UserRole, row)
+                self.job_center_table.setItem(row, column, table_item)
+        self.job_center_table.resizeColumnsToContents()
+        if rows:
+            self.job_center_table.selectRow(0)
+        else:
+            self.job_center_detail.setPlainText("No background jobs or stub targets are available for this report.")
+
+    def _populate_function_evidence(self, report: dict) -> None:
+        del report
+        payload = self._current_index_payload or {}
+        entities = payload.get("entities") or []
+        functions = []
+        for entity in entities:
+            if entity.get("kind") != "function":
+                continue
+            attrs = entity.get("attributes") or {}
+            functions.append(
+                {
+                    "entity_id": f"{entity.get('kind')}:{entity.get('key')}",
+                    "entity": entity,
+                    "label": str(entity.get("label", "")),
+                    "address": str(attrs.get("address") or ""),
+                    "class_name": str(attrs.get("class_name") or attrs.get("namespace") or ""),
+                    "tool": str(attrs.get("tool") or ""),
+                    "confidence": self._function_confidence(entity),
+                    "provenance": self._function_provenance(entity),
+                    "has_decompiled_body": bool(attrs.get("decompiled_c")),
+                    "is_generic_name": self._is_generic_function_name(str(entity.get("label", ""))),
+                }
+            )
+        functions.sort(key=lambda item: (item["confidence"] == "low", item["label"].lower(), item["address"]))
+        self._function_evidence_entities = functions
+        self._refresh_function_evidence_table()
+
+    def _refresh_function_evidence_table(self) -> None:
+        query = self.function_search_input.text().strip().lower()
+        confidence_filter = self.function_confidence_combo.currentText().strip().lower()
+        if confidence_filter == "all":
+            confidence_filter = ""
+        rows = []
+        for item in self._function_evidence_entities:
+            if confidence_filter and item["confidence"] != confidence_filter:
+                continue
+            haystack = " ".join(
+                [
+                    item["label"],
+                    item["address"],
+                    item["class_name"],
+                    item["tool"],
+                    item["confidence"],
+                    item["provenance"],
+                    json.dumps((item["entity"].get("attributes") or {}), ensure_ascii=False),
+                ]
+            ).lower()
+            if query and query not in haystack:
+                continue
+            rows.append(item)
+        self.function_evidence_table.setRowCount(len(rows))
+        for row, item in enumerate(rows):
+            values = [item["label"], item["address"], item["class_name"], item["tool"], item["confidence"], item["provenance"]]
+            for column, value in enumerate(values):
+                table_item = QTableWidgetItem(str(value))
+                table_item.setData(Qt.UserRole, item["entity_id"])
+                self.function_evidence_table.setItem(row, column, table_item)
+        self.function_evidence_table.resizeColumnsToContents()
+        if rows:
+            self.function_evidence_table.selectRow(0)
+        else:
+            self.function_evidence_detail.setPlainText("No functions matched the current filter.")
+
+    def _show_selected_function_evidence(self) -> None:
+        if self._current_report is None or self._current_index_payload is None:
+            return
+        items = self.function_evidence_table.selectedItems()
+        if not items:
+            return
+        entity_id = str(items[0].data(Qt.UserRole) or "")
+        if not entity_id:
+            return
+        entity = next(
+            (
+                item["entity"]
+                for item in self._function_evidence_entities
+                if item["entity_id"] == entity_id
+            ),
+            None,
+        )
+        if entity is None:
+            return
+        workflow = build_entity_workflow(self._current_report, self._current_index_payload, entity_id)
+        attrs = entity.get("attributes") or {}
+        detail = {
+            "entity_id": entity_id,
+            "label": entity.get("label"),
+            "confidence": self._function_confidence(entity),
+            "provenance": self._function_provenance(entity),
+            "address": attrs.get("address"),
+            "class_name": attrs.get("class_name"),
+            "signature": attrs.get("signature"),
+            "decompile_success": attrs.get("decompile_success"),
+            "workflow_summary": workflow.get("workflow_summary"),
+            "artifact_candidates": workflow.get("artifact_candidates"),
+            "recovered_sources": workflow.get("recovered_sources"),
+            "callers": attrs.get("callers"),
+            "callees": attrs.get("callees"),
+        }
+        lines = [json.dumps(detail, indent=2)]
+        decompiled_c = str(attrs.get("decompiled_c") or "").strip()
+        if decompiled_c:
+            lines.extend(["", "Decompiled body:", "", decompiled_c])
+        self.function_evidence_detail.setPlainText("\n".join(lines))
+
+    def _show_selected_job_center_item(self) -> None:
+        row = self._selected_job_center_row()
+        if row is None:
+            return
+        self.job_center_detail.setPlainText(json.dumps(row, indent=2))
+
+    def _open_selected_job_center_item(self) -> None:
+        row = self._selected_job_center_row()
+        if row and row.get("path"):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(row["path"])))
+
+    def _preview_selected_job_center_item(self) -> None:
+        row = self._selected_job_center_row()
+        if not row or not row.get("path"):
+            return
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.artifacts_tab_widget))
+        self._load_preview(str(row["path"]))
+
+    def _selected_job_center_row(self) -> dict | None:
+        items = self.job_center_table.selectedItems()
+        if not items:
+            return None
+        row_index = items[0].data(Qt.UserRole)
+        if not isinstance(row_index, int) or row_index < 0 or row_index >= len(self._job_center_rows):
+            return None
+        return self._job_center_rows[row_index]
+
+    @staticmethod
+    def _job_type_from_description(description: str) -> str:
+        lowered = description.lower()
+        if "llm" in lowered:
+            return "llm"
+        if "ghidra" in lowered:
+            return "ghidra"
+        if "pe tools" in lowered:
+            return "pe-tools"
+        if "jadx" in lowered:
+            return "jadx"
+        if "frida" in lowered or "runtime" in lowered:
+            return "runtime"
+        return "background"
+
+    @staticmethod
+    def _function_provenance(entity: dict) -> str:
+        attrs = entity.get("attributes") or {}
+        key = str(entity.get("key") or "")
+        if attrs.get("decompiled_c"):
+            return "decompiler-backed"
+        if key.startswith("msvc_rtti:") or attrs.get("vtable_rva"):
+            return "rtti-vtable"
+        if attrs.get("class_name"):
+            return "class-context"
+        return str(attrs.get("tool") or "analysis-index")
+
+    @staticmethod
+    def _function_confidence(entity: dict) -> str:
+        attrs = entity.get("attributes") or {}
+        label = str(entity.get("label") or "")
+        if attrs.get("decompiled_c") and not MainWindow._is_generic_function_name(label):
+            return "high"
+        if attrs.get("decompiled_c") or attrs.get("class_name") or attrs.get("vtable_rva"):
+            return "medium"
+        return "low" if MainWindow._is_generic_function_name(label) else "medium"
+
+    @staticmethod
+    def _is_generic_function_name(name: str) -> bool:
+        return name.startswith(("sub_", "FUN_", "thunk_", "vf_"))
 
     def _refresh_index_table(self) -> None:
         payload = self._current_index_payload or {}

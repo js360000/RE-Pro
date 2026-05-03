@@ -16,6 +16,7 @@ from .models import LlmAssistSettings
 from .models import PortingSettings
 from .models import RuntimeTraceSettings
 from .plugins import build_analyzers, resolve_plugin_dirs
+from .recovery_insights import write_recovery_insights
 from .reporting import write_json_report, write_markdown_report
 from .elf import (
     parse_elf_interpreter,
@@ -320,6 +321,21 @@ class ReverseEngineeringEngine:
                 f"{ingest_summary['correlated_functions']} function address match(es) and "
                 f"{ingest_summary['correlated_strings']} string address match(es)."
             )
+
+        insight_artifacts = write_recovery_insights(report, context.analysis_index.to_dict(), output_dir)
+        for insight in insight_artifacts:
+            report.add_artifact(str(insight.path), insight.category, insight.description)
+            insight_id = context.analysis_index.add_entity(
+                "artifact",
+                str(insight.path),
+                insight.description,
+                attributes={
+                    "path": str(insight.path),
+                    "category": insight.category,
+                    "description": insight.description,
+                },
+            )
+            context.analysis_index.add_relation(target_id, "produced_artifact", insight_id)
 
         index_path = output_dir / "analysis_index.json"
         index_path.write_text(json.dumps(context.analysis_index.to_dict(), indent=2), encoding="utf-8")

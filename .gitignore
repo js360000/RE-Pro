@@ -31,6 +31,7 @@ opencode_7z_extract/
 sample_analysis*/
 samples_analysis*/
 samples_real_analysis*/
+samples_real/*.dmg
 z-code-analysis_output/
 z-code-MAIN-analysis_output*/
 smoke_output*/

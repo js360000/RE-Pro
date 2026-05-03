@@ -1,1 +1,0 @@
-samples_real/Joplin-3.5.13.dmg filter=lfs diff=lfs merge=lfs -text

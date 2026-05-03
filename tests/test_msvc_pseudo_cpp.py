@@ -259,7 +259,117 @@ class MsvcPseudoCppTests(unittest.TestCase):
 
             header_text = (Path(temp_dir) / "Foo.hpp").read_text(encoding="utf-8")
 
-            self.assertIn("virtual void vf_140001140(const char * title, const char * message);", header_text)
+            self.assertIn("virtual void ShowAlert(const char * title, const char * message);", header_text)
+
+    def test_write_pseudo_class_sources_infers_semantic_names_for_generic_vtable_methods(self) -> None:
+        recovered = {
+            "classes": [
+                {
+                    "name": "Fixture::AppController",
+                    "kind": "class",
+                    "mangled_name": ".?AVAppController@Fixture@@",
+                    "type_descriptor_rva": "0x2000",
+                    "base_classes": [],
+                    "methods": [
+                        {"name": "vf_140001500", "slot": 0, "address": "0x140001500", "vtable_rva": "0x2128"},
+                        {"name": "vf_140001520", "slot": 1, "address": "0x140001520", "vtable_rva": "0x2128"},
+                        {"name": "vf_140001540", "slot": 2, "address": "0x140001540", "vtable_rva": "0x2128"},
+                    ],
+                },
+                {
+                    "name": "Fixture::ConsoleLogger",
+                    "kind": "class",
+                    "mangled_name": ".?AVConsoleLogger@Fixture@@",
+                    "type_descriptor_rva": "0x2100",
+                    "base_classes": [],
+                    "methods": [
+                        {"name": "vf_140001560", "slot": 0, "address": "0x140001560", "vtable_rva": "0x2228"},
+                    ],
+                },
+            ]
+        }
+        decompiled_entries = [
+            {
+                "entry_point": "0x140001500",
+                "name": "sub_140001500",
+                "signature": "char * sub_140001500(Fixture::AppController *this)",
+                "return_type": "char *",
+                "parameters": [
+                    {"ordinal": 0, "name": "this", "data_type": "Fixture::AppController *", "storage": "RCX"},
+                ],
+                "decompile_success": True,
+                "decompiled_c": (
+                    "char * sub_140001500(Fixture::AppController *this)\n"
+                    "{\n"
+                    "  return std::basic_string<char,std::char_traits<char>,std::allocator<char>>::c_str(&this->display_name_);\n"
+                    "}"
+                ),
+            },
+            {
+                "entry_point": "0x140001520",
+                "name": "sub_140001520",
+                "signature": "void sub_140001520(Fixture::AppController *this, wchar_t * param_1)",
+                "return_type": "void",
+                "parameters": [
+                    {"ordinal": 0, "name": "this", "data_type": "Fixture::AppController *", "storage": "RCX"},
+                    {"ordinal": 1, "name": "param_1", "data_type": "wchar_t *", "storage": "RDX"},
+                ],
+                "decompile_success": True,
+                "decompiled_c": (
+                    "void sub_140001520(Fixture::AppController *this, wchar_t * param_1)\n"
+                    "{\n"
+                    "  std::basic_string<wchar_t,std::char_traits<wchar_t>,std::allocator<wchar_t>>::operator=(&this->config_path_w_,param_1);\n"
+                    "}"
+                ),
+            },
+            {
+                "entry_point": "0x140001540",
+                "name": "sub_140001540",
+                "signature": "Fixture::ILogger * sub_140001540(Fixture::AppController *this)",
+                "return_type": "Fixture::ILogger *",
+                "parameters": [
+                    {"ordinal": 0, "name": "this", "data_type": "Fixture::AppController *", "storage": "RCX"},
+                ],
+                "decompile_success": True,
+                "decompiled_c": (
+                    "Fixture::ILogger * sub_140001540(Fixture::AppController *this)\n"
+                    "{\n"
+                    "  return (Fixture::ILogger *)&this->logger_;\n"
+                    "}"
+                ),
+            },
+            {
+                "entry_point": "0x140001560",
+                "name": "sub_140001560",
+                "signature": "void sub_140001560(Fixture::ConsoleLogger *this, char * param_1)",
+                "return_type": "void",
+                "parameters": [
+                    {"ordinal": 0, "name": "this", "data_type": "Fixture::ConsoleLogger *", "storage": "RCX"},
+                    {"ordinal": 1, "name": "param_1", "data_type": "char *", "storage": "RDX"},
+                ],
+                "decompile_success": True,
+                "decompiled_c": (
+                    "void sub_140001560(Fixture::ConsoleLogger *this, char * param_1)\n"
+                    "{\n"
+                    "  OutputDebugStringA(param_1);\n"
+                    "}"
+                ),
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            write_pseudo_class_sources(Path(temp_dir), recovered, decompiled_entries=decompiled_entries)
+
+            app_header = (Path(temp_dir) / "Fixture__AppController.hpp").read_text(encoding="utf-8")
+            app_source = (Path(temp_dir) / "Fixture__AppController.cpp").read_text(encoding="utf-8")
+            logger_header = (Path(temp_dir) / "Fixture__ConsoleLogger.hpp").read_text(encoding="utf-8")
+
+            self.assertIn("virtual const char * GetDisplayName(void);", app_header)
+            self.assertIn("virtual void SetConfigPathW(const wchar_t * path);", app_header)
+            self.assertIn("virtual Fixture::ILogger * GetLogger(void);", app_header)
+            self.assertIn("virtual void Log(const char * message);", logger_header)
+            self.assertIn("Method name inferred from string_member_c_str: c_str(&this->display_name_)", app_source)
+            self.assertIn("Original recovered vtable name: vf_140001500", app_source)
 
     def test_write_pseudo_class_sources_promotes_c_str_returns_to_const(self) -> None:
         recovered = {

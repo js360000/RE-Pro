@@ -1044,6 +1044,9 @@ class ExternalToolAnalyzer(Analyzer):
                     "vtable_rva": method.get("vtable_rva"),
                     "method_kind": method.get("method_kind"),
                     "semantic_alias": method.get("semantic_alias"),
+                    "name_inference_source": method.get("name_inference_source"),
+                    "name_inference_evidence": method.get("name_inference_evidence"),
+                    "original_vtable_name": method.get("original_vtable_name"),
                     "return_type": method.get("return_type") or decompiled.get("return_type"),
                     "params": method.get("params") or decompiled.get("parameters"),
                     "decompiler": {

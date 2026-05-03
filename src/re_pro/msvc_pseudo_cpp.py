@@ -193,6 +193,12 @@ def render_class_source(
             lines.append(f"    // Inferred method role: {method.get('method_kind')}")
         if method.get("semantic_alias"):
             lines.append(f"    // Human-readable alias: {method.get('semantic_alias')}")
+        if method.get("name_inference_source"):
+            evidence = str(method.get("name_inference_evidence") or "").strip()
+            suffix = f": {evidence}" if evidence else ""
+            lines.append(f"    // Method name inferred from {method.get('name_inference_source')}{suffix}")
+        if method.get("original_vtable_name"):
+            lines.append(f"    // Original recovered vtable name: {method.get('original_vtable_name')}")
         if method.get("shared_vtable_target_count"):
             lines.append(
                 "    // Shared vtable target: "
@@ -429,8 +435,6 @@ def _infer_method_metadata(
         and _is_generic_function_name(candidate_name)
     ):
         method_kind = "pure_virtual"
-    display_name = _display_name_for_method(candidate_name, class_name, method_kind, method)
-    semantic_alias = _semantic_alias_for_method(class_name, method_kind)
     params = _normalize_params(
         _extract_parameter_entries(decompiled_entry, parsed["params"]),
         full_class_name,
@@ -447,6 +451,22 @@ def _infer_method_metadata(
         method_kind,
         class_hierarchy or {},
     )
+    name_inference = _infer_semantic_method_name(
+        candidate_name,
+        method,
+        full_class_name,
+        class_name,
+        decompiled_entry,
+        params,
+        return_type,
+        method_kind,
+    )
+    if name_inference:
+        candidate_name = str(name_inference.get("name") or candidate_name)
+        method_kind = _infer_method_kind(candidate_name, class_name)
+        params = _apply_method_name_hints_to_params(params, candidate_name)
+    display_name = _display_name_for_method(candidate_name, class_name, method_kind, method)
+    semantic_alias = _semantic_alias_for_method(class_name, method_kind)
     caller_names = _extract_caller_names(decompiled_entry)
     callsite_argument_hints = _extract_callsite_argument_hints(decompiled_entry)
     if method_kind in {"constructor", "destructor"}:
@@ -470,6 +490,9 @@ def _infer_method_metadata(
         "callsite_argument_hints": callsite_argument_hints,
         "result_hints": _extract_result_hints(decompiled_entry),
         "return_type_inference": body_return_inference or return_type_inference,
+        "name_inference_source": (name_inference or {}).get("source"),
+        "name_inference_evidence": (name_inference or {}).get("evidence"),
+        "original_vtable_name": explicit_name if _is_generic_function_name(explicit_name) and display_name != explicit_name else None,
         "is_virtual": method_kind != "constructor",
         "inference_source": _inference_source(explicit_name, decompiled_name, parsed["name"]),
     }
@@ -481,6 +504,206 @@ def _choose_candidate_method_name(explicit_name: str, decompiled_name: str, sign
         if normalized and not _is_generic_function_name(normalized):
             return normalized
     return explicit_name or _normalize_qualified_function_name(signature_name) or decompiled_name or "method"
+
+
+def _infer_semantic_method_name(
+    candidate_name: str,
+    method: dict[str, object],
+    full_class_name: str,
+    class_name: str,
+    decompiled_entry: dict[str, object] | None,
+    params: list[dict[str, str]],
+    return_type: str,
+    method_kind: str,
+) -> dict[str, str] | None:
+    if method_kind not in {"virtual_method", ""}:
+        return None
+    if not _is_generic_function_name(candidate_name):
+        return None
+    decompiled_c = str((decompiled_entry or {}).get("decompiled_c") or "")
+    if not decompiled_c:
+        return None
+
+    returned_member = _extract_returned_member_name(decompiled_c)
+    if returned_member:
+        suffix = _member_name_to_method_suffix(returned_member)
+        if suffix:
+            return {
+                "name": f"Get{suffix}",
+                "source": "returned_member",
+                "evidence": f"return of this->{returned_member}",
+            }
+
+    c_str_member = _extract_c_str_member_name(decompiled_c)
+    if c_str_member:
+        suffix = _member_name_to_method_suffix(c_str_member)
+        if suffix:
+            return {
+                "name": f"Get{suffix}",
+                "source": "string_member_c_str",
+                "evidence": f"c_str(&this->{c_str_member})",
+            }
+
+    assigned_member = _extract_assigned_member_name(decompiled_c)
+    if assigned_member and params:
+        suffix = _member_name_to_method_suffix(assigned_member)
+        if suffix:
+            return {
+                "name": f"Set{suffix}",
+                "source": "member_assignment",
+                "evidence": f"write to this->{assigned_member}",
+            }
+
+    bool_member = _extract_boolean_member_name(decompiled_c)
+    if bool_member and _normalized_type_is_bool(return_type):
+        suffix = _member_name_to_method_suffix(bool_member)
+        if suffix:
+            return {
+                "name": f"Is{suffix}",
+                "source": "boolean_member_return",
+                "evidence": f"boolean use of this->{bool_member}",
+            }
+
+    if _body_calls_any(decompiled_entry, ("MessageBoxA", "MessageBoxW", "TaskDialog", "DialogBox")):
+        return {"name": "ShowAlert", "source": "ui_callee", "evidence": "message-box API call"}
+
+    if _class_or_body_suggests_logger(full_class_name, decompiled_entry) and _has_string_like_param(params):
+        return {"name": "Log", "source": "logger_callee", "evidence": "logger class/API with string parameter"}
+
+    if _body_calls_any(decompiled_entry, ("OutputDebugStringA", "OutputDebugStringW", "puts", "printf", "fprintf", "std::cout")):
+        return {"name": "WriteMessage", "source": "text_output_callee", "evidence": "text-output API call"}
+
+    if _body_calls_any(decompiled_entry, ("CreateFileA", "CreateFileW", "fopen", "ifstream", "std::filesystem")) and _has_param_named(params, "path"):
+        return {"name": "OpenPath", "source": "file_api_callee", "evidence": "file API call with path parameter"}
+
+    return None
+
+
+def _extract_returned_member_name(decompiled_c: str) -> str:
+    patterns = [
+        r"return\s+\([^)]*\)\s*&this->([A-Za-z_]\w*)\s*;",
+        r"return\s+&this->([A-Za-z_]\w*)\s*;",
+        r"return\s+this->([A-Za-z_]\w*)\s*;",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, decompiled_c)
+        if match is not None:
+            member_name = match.group(1)
+            if _is_nameable_member(member_name):
+                return member_name
+    return ""
+
+
+def _extract_c_str_member_name(decompiled_c: str) -> str:
+    match = re.search(r"::c_str(?:<[\s\S]*?>)?\s*\(\s*&this->([A-Za-z_]\w*)", decompiled_c)
+    if match is None:
+        return ""
+    member_name = match.group(1)
+    return member_name if _is_nameable_member(member_name) else ""
+
+
+def _extract_assigned_member_name(decompiled_c: str) -> str:
+    patterns = [
+        r"this->([A-Za-z_]\w*)\s*=\s*[^;\n]+",
+        r"::operator=\s*\(\s*&this->([A-Za-z_]\w*)\s*,",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, decompiled_c)
+        if match is not None:
+            member_name = match.group(1)
+            if _is_nameable_member(member_name):
+                return member_name
+    return ""
+
+
+def _extract_boolean_member_name(decompiled_c: str) -> str:
+    patterns = [
+        r"return\s+\(?this->([A-Za-z_]\w*)\s*!=\s*0\)?\s*;",
+        r"return\s+\(?this->([A-Za-z_]\w*)\s*==\s*0\)?\s*;",
+        r"return\s+\(?bool\)?\s*this->([A-Za-z_]\w*)\s*;",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, decompiled_c)
+        if match is not None:
+            member_name = match.group(1)
+            if _is_nameable_member(member_name):
+                return member_name
+    return ""
+
+
+def _is_nameable_member(member_name: str) -> bool:
+    lowered = str(member_name or "").strip().lower()
+    return bool(lowered and lowered not in {"vftable", "vfptr", "_padding_"} and "vftable" not in lowered)
+
+
+def _member_name_to_method_suffix(member_name: str) -> str:
+    name = str(member_name or "").strip()
+    name = re.sub(r"^(m_|m)(?=[A-Z_])", "", name)
+    name = name.strip("_")
+    if not name:
+        return ""
+    suffix = ""
+    lowered = name.lower()
+    if lowered.endswith("_w"):
+        name = name[:-2]
+        suffix = "W"
+    elif lowered.endswith("_a"):
+        name = name[:-2]
+        suffix = "A"
+    tokens = [token for token in re.split(r"[_\s]+", name) if token]
+    if len(tokens) <= 1:
+        tokens = _tokenize_identifier(name)
+    rendered = "".join(_pascal_token(token) for token in tokens)
+    return rendered + suffix
+
+
+def _pascal_token(token: str) -> str:
+    text = str(token or "").strip("_")
+    if not text:
+        return ""
+    if len(text) == 1:
+        return text.upper()
+    if text.isupper():
+        return text
+    return text[:1].upper() + text[1:]
+
+
+def _normalized_type_is_bool(return_type: str) -> bool:
+    return str(return_type or "").strip().lower() in {"bool", "boolean", "_bool"}
+
+
+def _body_calls_any(decompiled_entry: dict[str, object] | None, names: tuple[str, ...]) -> bool:
+    body = str((decompiled_entry or {}).get("decompiled_c") or "").lower()
+    lowered_names = [name.lower() for name in names]
+    if any(name in body for name in lowered_names):
+        return True
+    for callee in (decompiled_entry or {}).get("callees") or []:
+        if not isinstance(callee, dict):
+            continue
+        haystack = " ".join(str(callee.get(key) or "") for key in ("name", "signature", "namespace")).lower()
+        if any(name in haystack for name in lowered_names):
+            return True
+    return False
+
+
+def _class_or_body_suggests_logger(full_class_name: str, decompiled_entry: dict[str, object] | None) -> bool:
+    class_lower = str(full_class_name or "").lower()
+    if any(keyword in class_lower for keyword in ("logger", "log", "trace", "console")):
+        return True
+    return _body_calls_any(decompiled_entry, ("OutputDebugStringA", "OutputDebugStringW", "puts", "printf", "fprintf", "log"))
+
+
+def _has_string_like_param(params: list[dict[str, str]]) -> bool:
+    for parameter in params:
+        text = f"{parameter.get('type', '')} {parameter.get('name', '')}".lower()
+        if any(keyword in text for keyword in ("char", "string", "text", "message", "name", "path")):
+            return True
+    return False
+
+
+def _has_param_named(params: list[dict[str, str]], name: str) -> bool:
+    wanted = str(name or "").lower()
+    return any(str(parameter.get("name") or "").lower() == wanted for parameter in params)
 
 
 def _normalize_qualified_function_name(value: str) -> str:

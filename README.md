@@ -64,7 +64,7 @@ For a more scan-friendly matrix, see [docs/supported-formats.md](docs/supported-
 
 - PyQt5 desktop GUI for reports, artifacts, recovered sources, and graph-driven pivots.
 - Dedicated GUI surfaces for function evidence, recovery quality, background/stub jobs, live LLM status, and source-first file editing.
-- CLI for analysis, live-process capture, source browsing/editing, architecture-port generation, profiles, comparison, patch-bundle creation, packaging actions, MCP launch details, and tooling install.
+- CLI for analysis, run inspection, live-process capture, source browsing/editing, architecture-port generation, profiles, comparison, patch-bundle creation, packaging actions, MCP launch details, and tooling install.
 - MCP server exposing analysis, graph search, reconstruction, validation, diff, rebuild, and packaging workflows to external LLM clients.
 - Saved JSON profiles for repeatable analysis and package-action runs.
 
@@ -110,6 +110,12 @@ Run a high-yield pass with external tools, source beautification, Codex OAuth LL
 
 ```bash
 re-pro analyze path\to\target.exe -o analysis_output --external-tools --beautify-frontend --llm --llm-auth codex-oauth --llm-model gpt-5.5 --llm-reasoning high --port-target-arch arm64 --port-mode hybrid
+```
+
+Inspect a completed run's recovery quality, evidence graph, function evidence pages, and stub-elimination targets:
+
+```bash
+re-pro inspect-run path\to\analysis_run --query Widget --limit 20
 ```
 
 Compare two existing runs:
@@ -334,7 +340,7 @@ Each analysis run writes a timestamped folder containing:
 - recovered sources and extracted artifacts
 - porting guidance and prepared source bundles
 - recompile templates and manifests
-- recovery quality, evidence graph, and stub-elimination manifests
+- recovery quality, evidence graph, offline evidence graph browser, function evidence pages, and stub-elimination manifests
 - optional diff, patch, and packaging outputs
 - optional `llm_assist`, `mcp_reconstruction`, `runtime_trace`, `live_process`, `browser_workspace`, and frontend source-lift outputs
 

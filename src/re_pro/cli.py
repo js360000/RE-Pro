@@ -4,6 +4,7 @@ import argparse
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from .analysis_diff import compare_analysis_runs, create_patch_bundle_from_runs
 from .analyzers.external_tools import ExternalToolAnalyzer
@@ -150,6 +151,12 @@ def build_parser() -> argparse.ArgumentParser:
     browse_patch.add_argument("node_id", help="Browser node id")
     browse_patch.add_argument("--offset", type=int, required=True, help="Byte offset to patch")
     browse_patch.add_argument("--hex", required=True, help="Hex bytes to write, e.g. '90 90'")
+
+    inspect_run = subparsers.add_parser("inspect-run", help="Inspect recovery quality, evidence graph, and stub targets for an existing run")
+    inspect_run.add_argument("run_output_dir", help="Existing analysis run output directory")
+    inspect_run.add_argument("--query", default="", help="Filter stub targets, function evidence pages, and graph hubs")
+    inspect_run.add_argument("--limit", type=int, default=20, help="Maximum items per section")
+    inspect_run.add_argument("--json", action="store_true", help="Print machine-readable inspection output")
 
     architecture_port = subparsers.add_parser("architecture-port", help="Generate a target-architecture source port from an existing run")
     architecture_port.add_argument("run_output_dir", help="Existing analysis run output directory")
@@ -431,6 +438,13 @@ def main() -> int:
             result = patch_browser_node_bytes(Path(args.run_output_dir), args.node_id, args.offset, args.hex)
             print(json.dumps(result, indent=2))
             return 0
+    if args.command == "inspect-run":
+        result = _inspect_analysis_run(Path(args.run_output_dir), query=args.query, limit=args.limit)
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            _print_inspect_run(result)
+        return 0
     if args.command == "architecture-port":
         result = generate_architecture_port_from_run(
             Path(args.run_output_dir),
@@ -583,6 +597,97 @@ def main() -> int:
 
     parser.print_help()
     return 1
+
+
+def _inspect_analysis_run(run_dir: Path, *, query: str = "", limit: int = 20) -> dict[str, Any]:
+    run_dir = run_dir.resolve()
+    normalized_limit = max(1, min(int(limit), 200))
+    report = _load_json_file(run_dir / "report.json")
+    quality = _load_json_file(run_dir / "usability" / "recovery_quality.json")
+    stub_queue = _load_json_file(run_dir / "usability" / "stub_elimination_queue.json")
+    graph = _load_json_file(run_dir / "usability" / "evidence_graph.json")
+    pages = _load_json_file(run_dir / "usability" / "function_evidence_pages.json")
+    query_text = query.strip().lower()
+
+    def matches(item: dict[str, Any]) -> bool:
+        return not query_text or query_text in json.dumps(item, ensure_ascii=False).lower()
+
+    stub_targets = [target for target in stub_queue.get("targets", []) if isinstance(target, dict) and matches(target)]
+    function_pages = [page for page in pages.get("pages", []) if isinstance(page, dict) and matches(page)]
+    top_hubs = [hub for hub in graph.get("top_hubs", []) if isinstance(hub, dict) and matches(hub)]
+    artifacts = {
+        "quality_manifest": str(run_dir / "usability" / "recovery_quality.json"),
+        "quality_markdown": str(run_dir / "usability" / "recovery_quality.md"),
+        "evidence_graph_manifest": str(run_dir / "usability" / "evidence_graph.json"),
+        "evidence_graph_html": str(run_dir / "usability" / "evidence_graph.html"),
+        "stub_queue": str(run_dir / "usability" / "stub_elimination_queue.json"),
+        "function_evidence_pages": str(run_dir / "usability" / "function_evidence_pages.json"),
+    }
+    summary = quality.get("summary") if isinstance(quality.get("summary"), dict) else {}
+    target = report.get("target") or graph.get("target") or run_dir.name
+    return {
+        "run_dir": str(run_dir),
+        "target": target,
+        "query": query,
+        "quality": summary,
+        "stub_targets": stub_targets[:normalized_limit],
+        "function_pages": function_pages[:normalized_limit],
+        "top_hubs": top_hubs[:normalized_limit],
+        "artifact_paths": artifacts,
+        "missing_artifacts": [path for path in artifacts.values() if not Path(path).exists()],
+    }
+
+
+def _print_inspect_run(result: dict[str, Any]) -> None:
+    quality = result.get("quality") or {}
+    print(f"Run: {result.get('run_dir')}")
+    print(f"Target: {result.get('target')}")
+    print("Recovery Quality:")
+    print(
+        "  "
+        f"functions={quality.get('function_count', 0)} "
+        f"classes={quality.get('class_count', 0)} "
+        f"sources={quality.get('source_count', 0)} "
+        f"high_confidence_sources={_float_quality(quality, 'high_confidence_source_ratio'):.2f} "
+        f"stub_targets={quality.get('stub_target_count', 0)} "
+        f"function_pages={quality.get('function_evidence_page_count', 0)}"
+    )
+    print("Artifacts:")
+    for label, path in (result.get("artifact_paths") or {}).items():
+        status = "ok" if Path(path).exists() else "missing"
+        print(f"  {label}: {path} [{status}]")
+    if result.get("missing_artifacts"):
+        print("Missing artifacts indicate this run predates the recovery-insight pass or did not reach that stage.")
+    _print_inspection_section("Top Stub Targets", result.get("stub_targets") or [], ["priority", "kind", "label", "address", "reason"])
+    _print_inspection_section("Function Evidence Pages", result.get("function_pages") or [], ["confidence", "label", "address", "class_name", "path"])
+    _print_inspection_section("Top Evidence Hubs", result.get("top_hubs") or [], ["degree", "kind", "label", "entity_id"])
+
+
+def _print_inspection_section(title: str, items: list[dict[str, Any]], keys: list[str]) -> None:
+    print(f"{title}:")
+    if not items:
+        print("  none")
+        return
+    for item in items:
+        parts = [f"{key}={item.get(key)}" for key in keys if item.get(key) not in {None, ""}]
+        print("  - " + " | ".join(parts))
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _float_quality(quality: dict[str, Any], key: str) -> float:
+    try:
+        return float(quality.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _emit_llm_markdown_report(report) -> None:

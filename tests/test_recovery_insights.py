@@ -54,7 +54,9 @@ class RecoveryInsightTests(unittest.TestCase):
             descriptions = {artifact.description for artifact in artifacts}
             self.assertIn("Recovery quality manifest", descriptions)
             self.assertIn("Evidence graph manifest", descriptions)
+            self.assertIn("Evidence graph browser", descriptions)
             self.assertIn("Stub elimination queue", descriptions)
+            self.assertIn("Function evidence page manifest", descriptions)
             queue_path = next(artifact.path for artifact in artifacts if artifact.description == "Stub elimination queue")
             queue = json.loads(queue_path.read_text(encoding="utf-8"))
             self.assertGreaterEqual(queue["summary"]["target_count"], 2)
@@ -63,6 +65,18 @@ class RecoveryInsightTests(unittest.TestCase):
             quality = json.loads(quality_path.read_text(encoding="utf-8"))
             self.assertEqual(quality["summary"]["function_count"], 2)
             self.assertGreater(quality["summary"]["stub_target_count"], 0)
+            self.assertGreater(quality["summary"]["function_evidence_page_count"], 0)
+            pages_path = next(artifact.path for artifact in artifacts if artifact.description == "Function evidence page manifest")
+            pages = json.loads(pages_path.read_text(encoding="utf-8"))
+            self.assertGreaterEqual(pages["summary"]["page_count"], 1)
+            first_page = Path(pages["pages"][0]["path"])
+            self.assertTrue(first_page.exists())
+            self.assertIn("# Function Evidence", first_page.read_text(encoding="utf-8"))
+            self.assertIn("file:///", pages["pages"][0]["file_url"])
+            graph_html_path = next(artifact.path for artifact in artifacts if artifact.description == "Evidence graph browser")
+            graph_html = graph_html_path.read_text(encoding="utf-8")
+            self.assertIn("RE-Pro Evidence Graph", graph_html)
+            self.assertIn("functionPages", graph_html)
 
 
 if __name__ == "__main__":

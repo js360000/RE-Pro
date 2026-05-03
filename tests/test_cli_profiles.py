@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -102,6 +103,74 @@ class CliProfileTests(unittest.TestCase):
             self.assertIn("Analysis complete:", stdout.getvalue())
             saved_profiles = list((root / "profiles" / "analysis").glob("*.json"))
             self.assertGreaterEqual(len(saved_profiles), 2)
+
+    def test_inspect_run_prints_quality_and_function_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "sample_20260423_180000"
+            usability = run_dir / "usability"
+            usability.mkdir(parents=True)
+            (run_dir / "report.json").write_text(json.dumps({"target": "sample.exe"}), encoding="utf-8")
+            (usability / "recovery_quality.json").write_text(
+                json.dumps(
+                    {
+                        "summary": {
+                            "function_count": 3,
+                            "class_count": 1,
+                            "source_count": 2,
+                            "high_confidence_source_ratio": 0.5,
+                            "stub_target_count": 1,
+                            "function_evidence_page_count": 1,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (usability / "recovery_quality.md").write_text("# Recovery Quality\n", encoding="utf-8")
+            (usability / "evidence_graph.json").write_text(
+                json.dumps({"top_hubs": [{"degree": 4, "kind": "class", "label": "Widget", "entity_id": "class:Widget"}]}),
+                encoding="utf-8",
+            )
+            (usability / "evidence_graph.html").write_text("<html></html>", encoding="utf-8")
+            (usability / "stub_elimination_queue.json").write_text(
+                json.dumps({"targets": [{"priority": 90, "kind": "function", "label": "Widget::Render", "reason": "generic function name"}]}),
+                encoding="utf-8",
+            )
+            (usability / "function_evidence_pages.json").write_text(
+                json.dumps({"pages": [{"confidence": "medium", "label": "Widget::Render", "address": "0x140001000", "path": "Widget_Render.md"}]}),
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with patch("sys.argv", ["re-pro", "inspect-run", str(run_dir), "--query", "Widget"]):
+                with patch("sys.stdout", stdout):
+                    exit_code = main()
+
+            output = stdout.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Recovery Quality:", output)
+            self.assertIn("Widget::Render", output)
+            self.assertIn("evidence_graph_html", output)
+
+    def test_inspect_run_can_emit_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "sample_20260423_180000"
+            usability = run_dir / "usability"
+            usability.mkdir(parents=True)
+            (run_dir / "report.json").write_text(json.dumps({"target": "sample.exe"}), encoding="utf-8")
+            (usability / "recovery_quality.json").write_text(json.dumps({"summary": {"function_count": 1}}), encoding="utf-8")
+            (usability / "stub_elimination_queue.json").write_text(json.dumps({"targets": []}), encoding="utf-8")
+            (usability / "evidence_graph.json").write_text(json.dumps({"top_hubs": []}), encoding="utf-8")
+            (usability / "function_evidence_pages.json").write_text(json.dumps({"pages": []}), encoding="utf-8")
+
+            stdout = io.StringIO()
+            with patch("sys.argv", ["re-pro", "inspect-run", str(run_dir), "--json"]):
+                with patch("sys.stdout", stdout):
+                    exit_code = main()
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["target"], "sample.exe")
+            self.assertEqual(payload["quality"]["function_count"], 1)
 
 
 if __name__ == "__main__":

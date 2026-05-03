@@ -4,7 +4,7 @@
 
 RE-Pro is a cross-platform reverse-engineering workbench built to turn opaque binaries and packaged apps into readable evidence, recovered source, and actionable rebuild workflows.
 
-It combines format-aware extraction, source restoration, external tool orchestration, graph-based correlation, GPT-assisted approximation, rebuild planning, and patch/signing workflows in one system with a CLI, a PyQt5 desktop GUI, and an MCP server.
+It combines format-aware extraction, source restoration, external tool orchestration, graph-based correlation, Codex/OpenAI-assisted approximation, rebuild planning, and patch/signing workflows in one system with a CLI, a PyQt5 desktop GUI, and an MCP server.
 
 ## Support RE-Pro
 
@@ -17,7 +17,8 @@ Bitcoin: `bc1qzyzwkfgfkeu3v44edwxaw0pre2fdvl6nd8hv0w`
 - Recover real source when it ships: source maps, managed resources, BAML/XAML, Tauri assets, manifests, symbols, package metadata, and bundled web payloads.
 - Correlate everything: functions, strings, frameworks, artifacts, resources, findings, and external tool exports land in a unified analysis graph.
 - Move beyond reporting: RE-Pro generates project templates, rebuild plans, signing plans, patch bundles, and bounded package actions instead of stopping at static dumps.
-- Work from any interface: GUI for browsing, CLI for repeatable automation, and MCP for LLM-driven evidence, reconstruction, and rebuild workflows.
+- Work from any interface: GUI for browsing/editing, CLI for repeatable automation, and MCP for LLM-driven evidence, reconstruction, and rebuild workflows.
+- Use either OpenAI API keys or Codex ChatGPT OAuth credentials from `.codex/auth.json` for GPT-assisted reconstruction.
 
 ## Highlights
 
@@ -28,29 +29,36 @@ Bitcoin: `bc1qzyzwkfgfkeu3v44edwxaw0pre2fdvl6nd8hv0w`
 - Apple: `.app`, `.ipa`, `.dmg`, `.pkg`, Mach-O inspection, entitlements, provisioning profiles, app extensions, framework heuristics.
 - Linux and native ecosystems: ELF, AppImage, SquashFS, WASM, MIPS/PS2-style ELFs, Capstone previews, Ghidra/rizin/radare2 exports.
 - Java and managed ecosystems: JAR, WAR, EAR, AAR, ILSpy, WPF/BAML/XAML recovery, ReadyToRun detection, managed resource extraction.
+- Console and game formats: PSARC, PSP PBP/DATA.PSP/DATA.PSAR, PS3 PKG metadata, RARC, CRI/CPK, U8, NARC, AFS, HOG, WAD-family markers, GDeflate and DDL-oriented game payload hints.
 
 ### Recovery and Analysis
 
 - JavaScript and web source-map restoration with shipped `sourcesContent`.
-- Electron `app.asar` and unpacked resource recovery.
+- Electron `app.asar` and unpacked resource recovery, including native ASAR fallback extraction.
 - Tauri embedded asset extraction and frontend restoration.
+- Best-effort frontend source reconstitution when source maps are absent, including hash-stripped asset names, Babel AST formatting, React compiler cache normalization, import/name propagation, JSX recovery, and optional LLM source-grade rewrites.
 - Remote PDB acquisition from symbol servers.
 - Unified `analysis_index.json` with normalized entities and relations.
 - Structured ingestion and cross-correlation of Ghidra, rizin, radare2, JADX, and ILSpy-oriented exports.
+- MSVC RTTI, vftable, class layout, constructor/destructor phase, thunk, call-edge, and pseudo-C++ source synthesis for symbol-poor native binaries.
+- Live-process capture for already-running Windows software, including module metadata, readable memory dumps, mapped-image options, carved runtime payloads, and Frida-oriented traces.
 
 ### Reconstruction and Rebuild
 
-- Porting workspaces with prepared source trees and target-platform guidance.
+- Architecture-porting workspaces with prepared source trees, x86/x64-to-arm64 style guidance, and heuristic or LLM-assisted portability notes.
 - Recompile workspaces with Android Studio, Xcode, Node, Tauri/Electron, and CMake-oriented templates.
 - Rebuild plans, signing plans, patch plans, run-to-run diffs, and diff-driven patch bundles.
 - Bounded package actions for APK signing, Electron repack, Tauri packaging, and patch application.
-- Optional GPT-5.4-assisted approximation when direct source recovery is weak.
+- PSARC create/rebuild workflows preserving compression choices, block sizes, file order, and editable extracted overlays.
+- Source-first browser workspaces for viewing and editing recovered files, manifests, archives, executables, JSON resources, PARAM.SFO, and hex/base64 nodes.
+- Optional GPT-5.5/GPT-5.4-assisted approximation when direct source recovery is weak.
 
 ### Interfaces
 
 - PyQt5 desktop GUI for reports, artifacts, recovered sources, and graph-driven pivots.
-- CLI for analysis, comparison, patch-bundle creation, packaging actions, and tooling install.
+- CLI for analysis, live-process capture, source browsing/editing, architecture-port generation, profiles, comparison, patch-bundle creation, packaging actions, MCP launch details, and tooling install.
 - MCP server exposing analysis, graph search, reconstruction, validation, diff, rebuild, and packaging workflows to external LLM clients.
+- Saved JSON profiles for repeatable analysis and package-action runs.
 
 ## Fast Start
 
@@ -72,6 +80,12 @@ Analyze a target:
 
 ```bash
 re-pro analyze path\to\target.exe -o analysis_output
+```
+
+Run a high-yield pass with external tools, source beautification, Codex OAuth LLM support, and porting guidance:
+
+```bash
+re-pro analyze path\to\target.exe -o analysis_output --external-tools --beautify-frontend --llm --llm-auth codex-oauth --llm-model gpt-5.5 --llm-reasoning high --port-target-arch arm64 --port-mode hybrid
 ```
 
 Compare two existing runs:
@@ -119,6 +133,37 @@ Load additional local analyzer plugins:
 re-pro analyze path\to\target.exe -o analysis_output --plugin-dir path\to\plugins
 ```
 
+Attach to a live process or capture by process name:
+
+```bash
+re-pro live-process list --query pcsx2
+re-pro live-process capture --process-name pcsx2-qt.exe -o analysis_output\pcsx2_live --include-images
+re-pro analyze --live-attach --live-process-name pcsx2-qt.exe -o analysis_output
+```
+
+Build and edit a source-first browser workspace for an existing run:
+
+```bash
+re-pro browse build path\to\analysis_run --rebuild
+re-pro browse read path\to\analysis_run node_00042 --mode json
+re-pro browse write path\to\analysis_run node_00042 --mode text --content-file edited_file.cpp
+re-pro browse patch path\to\analysis_run node_00043 --offset 0x120 --hex "90 90"
+```
+
+Generate an architecture-porting workspace from an existing run:
+
+```bash
+re-pro architecture-port path\to\analysis_run --source-arch x86_64 --target-arch arm64 --mode hybrid
+```
+
+Save, load, and inspect repeatable profiles:
+
+```bash
+re-pro analyze path\to\target.exe -o analysis_output --save-profile "Deep native pass"
+re-pro profiles list --query native
+re-pro analyze --profile "Deep native pass"
+```
+
 ## Tooling
 
 Install local reverse-engineering dependencies:
@@ -148,13 +193,27 @@ For remote symbol acquisition, RE-Pro uses Microsoft’s public symbol server by
 set RE_PRO_SYMBOL_SERVERS=https://msdl.microsoft.com/download/symbols/;https://your-symbol-server.example/symbols/
 ```
 
-## GPT Reconstruction
+## GPT and Codex Reconstruction
 
-Run GPT-assisted reconstruction:
+RE-Pro can call OpenAI models through a normal API key or through the Codex ChatGPT OAuth token cache written by Codex CLI/Desktop. The default `--llm-auth auto` mode uses `OPENAI_API_KEY` first, then falls back to `CODEX_AUTH_JSON`, `CODEX_HOME\auth.json`, or `~\.codex\auth.json`.
+
+Run GPT-assisted reconstruction with an API key:
 
 ```bash
 set OPENAI_API_KEY=...
-re-pro analyze path\to\target.exe -o analysis_output --llm --llm-background --llm-task "Focus on updater and IPC logic"
+re-pro analyze path\to\target.exe -o analysis_output --llm --llm-model gpt-5.5 --llm-reasoning high --llm-background --llm-task "Focus on updater and IPC logic"
+```
+
+Run through Codex OAuth instead of an API key:
+
+```bash
+re-pro analyze path\to\target.exe -o analysis_output --llm --llm-auth codex-oauth --llm-model gpt-5.5 --llm-reasoning xhigh
+```
+
+Use a custom Codex auth cache:
+
+```bash
+re-pro analyze path\to\target.exe -o analysis_output --llm --llm-auth codex-oauth --codex-auth-json C:\Users\you\.codex\auth.json
 ```
 
 Auto-trigger GPT only when recovery is weak:
@@ -163,11 +222,19 @@ Auto-trigger GPT only when recovery is weak:
 re-pro analyze path\to\target.exe -o analysis_output --llm-auto --llm-background
 ```
 
+Set model, reasoning, verbosity, and output limits explicitly:
+
+```bash
+re-pro analyze path\to\target.exe -o analysis_output --llm --llm-model gpt-5.4 --llm-reasoning medium --llm-verbosity medium --llm-max-output 16000
+```
+
 Disable autonomous dependency installation or build checks:
 
 ```bash
 re-pro analyze path\to\target.exe -o analysis_output --llm --llm-no-install --llm-no-build-checks
 ```
+
+Supported reasoning values are `none`, `low`, `medium`, `high`, and `xhigh` for current GPT-5.5/GPT-5.4-class models. The GUI exposes the same model, auth, reasoning, verbosity, output-token, background-job, dependency-install, and build-check controls.
 
 ## MCP
 
@@ -187,6 +254,12 @@ For HTTP-capable MCP clients:
 
 ```bash
 re-pro mcp-server --transport streamable-http --host 127.0.0.1 --port 8000
+```
+
+To print exact MCP client JSON, or start the MCP server in the background and write the client config:
+
+```bash
+re-pro mcp-info --transport streamable-http --host 127.0.0.1 --port 8000 --start
 ```
 
 The MCP surface exposes:
@@ -216,6 +289,8 @@ Or on this repo’s Windows setup:
 launch_gui.bat
 ```
 
+The GUI includes controls for Ghidra and external-tool jobs, frontend beautification, Codex/API-key LLM settings, architecture porting, runtime tracing, live-process attachment, profile save/load, MCP server startup with exact JSON, package actions, workspace browsing, and report/artifact/source inspection.
+
 ## Output
 
 Each analysis run writes a timestamped folder containing:
@@ -228,6 +303,7 @@ Each analysis run writes a timestamped folder containing:
 - porting guidance and prepared source bundles
 - recompile templates and manifests
 - optional diff, patch, and packaging outputs
+- optional `llm_assist`, `mcp_reconstruction`, `runtime_trace`, `live_process`, `browser_workspace`, and frontend source-lift outputs
 
 ## GitHub Pages
 

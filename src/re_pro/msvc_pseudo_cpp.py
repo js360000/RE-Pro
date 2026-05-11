@@ -945,7 +945,7 @@ def _display_name_for_method(
             slot_index = -1
         if slot_index >= 0:
             return f"__pure_virtual_slot_{slot_index}"
-        address = _normalize_hex((method or {}).get("address"))
+        address = _normalize_address((method or {}).get("address"))
         if address:
             return f"__pure_virtual_slot_{address[2:]}"
         return "__pure_virtual_slot"
@@ -1354,7 +1354,7 @@ def _split_call_arguments(arguments_text: str) -> list[str]:
 
 
 def _argument_mentions_parameter(argument: str, parameter_name: str) -> bool:
-    pattern = r"\b%s\b" % re.escape(parameter_name)
+    pattern = rf"\b{re.escape(parameter_name)}\b"
     return re.search(pattern, argument) is not None
 
 
@@ -1927,7 +1927,7 @@ def _entry_belongs_to_class(
     if namespace == class_name:
         return True
     signature = str(decompiled_entry.get("signature") or "").strip()
-    if re.search(r"\b%s \* *this\b" % re.escape(short_name), signature):
+    if re.search(rf"\b{re.escape(short_name)} \* *this\b", signature):
         return True
     name = str(decompiled_entry.get("name") or "").strip()
     return name in {short_name, f"~{short_name}", "__scalar_deleting_destructor", "__vector_deleting_destructor"}

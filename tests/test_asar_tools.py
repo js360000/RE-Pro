@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import tempfile
-import unittest
 import json
 import struct
+import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.asar_tools import extract_asar_archive
+from tests import _path_setup  # noqa: F401
 
 
 def _write_minimal_asar(path: Path, files: dict[str, bytes]) -> None:

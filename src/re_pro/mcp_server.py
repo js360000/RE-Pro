@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import base64
-from dataclasses import dataclass, field
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +21,7 @@ from .analysis_diff import compare_analysis_runs, create_patch_bundle_from_runs
 from .analyzers.porting import generate_architecture_port_from_run
 from .dependency_installer import DependencyInstaller
 from .engine import ReverseEngineeringEngine
-from .live_process import capture_live_process
-from .live_process import list_live_processes
+from .live_process import capture_live_process, list_live_processes
 from .models import LiveProcessSettings
 from .plugins import build_analyzers, resolve_plugin_dirs
 from .recompile import (
@@ -34,11 +33,7 @@ from .recompile import (
     validate_reconstruction_file,
 )
 from .utils import ensure_dir, safe_output_path, sanitize_text
-from .workspace_browser import build_browser_workspace
-from .workspace_browser import patch_browser_node_bytes
-from .workspace_browser import read_browser_node
-from .workspace_browser import write_browser_node
-
+from .workspace_browser import build_browser_workspace, patch_browser_node_bytes, read_browser_node, write_browser_node
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

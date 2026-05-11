@@ -10,7 +10,6 @@ from typing import Any, Callable
 from .tooling import resolve_command, run_command_logged
 from .utils import ensure_dir, safe_slug
 
-
 COMMAND_ENV = {
     "decrypt": "RE_PRO_PSP_DECRYPT_CMD",
     "psar_extract": "RE_PRO_PSP_PSAR_EXTRACT_CMD",

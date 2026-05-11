@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 LLM_AUTH_PROVIDERS = {"auto", "api-key", "codex-oauth"}
 
 

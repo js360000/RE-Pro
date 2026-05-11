@@ -4,9 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.msvc_pseudo_cpp import RECOVERY_CAPABILITIES, enrich_recovered_classes, write_pseudo_class_sources
+from tests import _path_setup  # noqa: F401
 
 
 class MsvcPseudoCppTests(unittest.TestCase):

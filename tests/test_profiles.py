@@ -4,18 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from re_pro.models import LlmAssistSettings, OutputSettings, RuntimeTraceSettings
+from re_pro.profiles import (
+    analysis_settings_from_profile,
+    build_analysis_profile,
+    build_package_action_profile,
+    list_profiles,
+    load_profile,
+    package_settings_from_profile,
+    save_profile,
+)
 from tests import _path_setup  # noqa: F401
-
-from re_pro.models import LlmAssistSettings
-from re_pro.models import OutputSettings
-from re_pro.models import RuntimeTraceSettings
-from re_pro.profiles import analysis_settings_from_profile
-from re_pro.profiles import build_analysis_profile
-from re_pro.profiles import build_package_action_profile
-from re_pro.profiles import list_profiles
-from re_pro.profiles import load_profile
-from re_pro.profiles import package_settings_from_profile
-from re_pro.profiles import save_profile
 
 
 class ProfileStoreTests(unittest.TestCase):

@@ -7,11 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analyzers.electron import ElectronAnalyzer
 from re_pro.engine import AnalysisContext
 from re_pro.models import AnalysisReport, FrontendSettings
+from tests import _path_setup  # noqa: F401
 
 
 class ElectronAnalyzerTests(unittest.TestCase):

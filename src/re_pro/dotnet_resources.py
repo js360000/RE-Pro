@@ -6,7 +6,6 @@ from pathlib import Path
 from .tooling import resolve_command, run_command_logged
 from .utils import ensure_dir
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HELPER_SOURCE_ROOT = REPO_ROOT / "src" / "re_pro_dotnet_helper"
 HELPER_PROJECT = HELPER_SOURCE_ROOT / "RePro.DotNetHelper.csproj"

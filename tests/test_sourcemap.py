@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import json
 import base64
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from re_pro.sourcemap import restore_inline_source_maps_from_file, restore_sources_from_map
 from tests import _path_setup  # noqa: F401
-
-from re_pro.sourcemap import restore_inline_source_maps_from_file
-from re_pro.sourcemap import restore_sources_from_map
 
 
 class SourceMapTests(unittest.TestCase):

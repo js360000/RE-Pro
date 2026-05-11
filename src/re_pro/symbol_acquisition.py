@@ -9,7 +9,6 @@ from urllib.request import Request, urlopen
 from .tooling import resolve_command, run_command
 from .utils import ensure_dir
 
-
 DEFAULT_SYMBOL_SERVERS = [
     "https://msdl.microsoft.com/download/symbols/",
 ]

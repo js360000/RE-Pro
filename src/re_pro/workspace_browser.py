@@ -1,33 +1,38 @@
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timezone
 import json
 import re
 import shutil
 import tarfile
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-import zipfile
 
+from .json_schemas import (
+    SchemaError,
+    load_json_object,
+    validate_browser_manifest,
+    validate_edits,
+    validate_report,
+)
 from .psarc import PSARC_METADATA_NAME, PsarcFormatError, extract_psarc, is_psarc, rebuild_psarc_with_overlay
-from .psp import PARAM_SFO_JSON_NAME
-from .psp import PBP_METADATA_NAME
-from .psp import PSP_SECTION_METADATA_NAMES
-from .psp import PspFormatError
-from .psp import build_param_sfo_from_json
-from .psp import extract_pbp
-from .psp import is_param_sfo
-from .psp import is_pbp
-from .psp import parse_param_sfo_file
-from .psp import rebuild_pbp_with_overlay
-from .psp_tools import encrypt_data_psp
-from .psp_tools import materialize_pbp_tool_outputs
-from .psp_tools import pack_data_psar
+from .psp import (
+    PARAM_SFO_JSON_NAME,
+    PSP_SECTION_METADATA_NAMES,
+    PspFormatError,
+    build_param_sfo_from_json,
+    extract_pbp,
+    is_param_sfo,
+    is_pbp,
+    parse_param_sfo_file,
+    rebuild_pbp_with_overlay,
+)
+from .psp_tools import encrypt_data_psp, materialize_pbp_tool_outputs, pack_data_psar
 from .recompile import create_recompile_workspace, rebuild_zip_archive_with_overlay, validate_reconstruction_file
 from .tooling import resolve_command, run_command_logged
 from .utils import ensure_dir, is_probable_binary, safe_slug, sanitize_relative_source_path
-
 
 BROWSER_WORKSPACE_DIR = "browse_workspace"
 BROWSER_MANIFEST_NAME = "browser_manifest.json"
@@ -1220,9 +1225,22 @@ def _write_browser_readme(workspace_root: Path) -> None:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"Expected a JSON object in {path}")
+    """Read a JSON object, validating the shape when the artifact is one we own.
+
+    Falls back to a generic object check for unrelated files (the helper is
+    also used for arbitrary user-visible JSON previews).
+    """
+    payload = load_json_object(path)
+    name = path.name
+    try:
+        if name == "report.json":
+            return validate_report(path, payload)
+        if name == BROWSER_MANIFEST_NAME:
+            return validate_browser_manifest(path, payload)
+        if name == BROWSER_EDITS_NAME:
+            return validate_edits(path, payload)
+    except SchemaError:
+        raise
     return payload
 
 

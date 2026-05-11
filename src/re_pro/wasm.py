@@ -4,7 +4,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-
 SECTION_NAMES = {
     0: "custom",
     1: "type",
@@ -145,7 +144,6 @@ def find_adjacent_wasm_map(path: Path, module_info: dict[str, object]) -> Path |
 def describe_wasm_toolchains(module_info: dict[str, object]) -> list[str]:
     producers = module_info.get("producers") or {}
     imports = module_info.get("imports") or []
-    exports = module_info.get("exports") or []
     strings = json.dumps(module_info, ensure_ascii=False).lower()
     frameworks: list[str] = ["WebAssembly (WASM)"]
     if "emscripten" in strings:

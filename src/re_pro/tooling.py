@@ -12,7 +12,6 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Iterable
 
-
 COMMON_WINDOWS_PATTERNS: dict[str, list[str]] = {
     "7z": [
         r"C:\Program Files\7-Zip\7z.exe",
@@ -334,8 +333,7 @@ def _iter_local_tool_matches(executable: str) -> Iterable[str]:
             continue
         for pattern in LOCAL_TOOL_GLOBS.get(executable, []):
             matches = sorted((str(path) for path in root.glob(pattern) if path.exists()), reverse=True)
-            for match in matches:
-                yield match
+            yield from matches
 
 
 def resolve_tool_path(executable: str, extra_patterns: list[str] | None = None) -> str | None:

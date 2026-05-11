@@ -7,12 +7,10 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analyzers.java import JavaPackageAnalyzer
-from re_pro.engine import ReverseEngineeringEngine
-from re_pro.engine import AnalysisContext
+from re_pro.engine import AnalysisContext, ReverseEngineeringEngine
 from re_pro.models import AnalysisReport
+from tests import _path_setup  # noqa: F401
 
 
 class JavaAnalyzerTests(unittest.TestCase):

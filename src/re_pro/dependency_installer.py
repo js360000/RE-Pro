@@ -5,8 +5,8 @@ import json
 import platform
 import shutil
 import subprocess
-import sysconfig
 import sys
+import sysconfig
 import zipfile
 from pathlib import Path
 from typing import Callable

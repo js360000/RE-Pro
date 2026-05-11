@@ -5,11 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analyzers.pdb import PDBAnalyzer
 from re_pro.engine import AnalysisContext
 from re_pro.models import AnalysisReport
+from tests import _path_setup  # noqa: F401
 
 
 class PDBAnalyzerTests(unittest.TestCase):

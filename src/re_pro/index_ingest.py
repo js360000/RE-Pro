@@ -5,7 +5,6 @@ from pathlib import Path
 
 from .analysis_index import AnalysisIndex
 
-
 FUNCTION_EXPORT_DESCRIPTIONS = {
     "Ghidra function export": "ghidra",
     "rizin function list": "rizin",

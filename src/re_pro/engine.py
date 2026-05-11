@@ -1,25 +1,13 @@
 from __future__ import annotations
 
+import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
-import json
 from pathlib import Path
-import time
 from typing import Callable
 
 from .analysis_index import AnalysisIndex
-from .index_ingest import ingest_structured_artifacts
-from .models import AnalysisReport
-from .models import FrontendSettings
-from .models import LiveProcessSettings
-from .models import LlmAssistSettings
-from .models import OutputSettings
-from .models import PortingSettings
-from .models import RuntimeTraceSettings
-from .output_organizer import organize_output_view
-from .plugins import build_analyzers, resolve_plugin_dirs
-from .recovery_insights import write_recovery_insights
-from .reporting import write_json_report, write_markdown_report
 from .elf import (
     parse_elf_interpreter,
     parse_elf_metadata,
@@ -28,17 +16,31 @@ from .elf import (
     parse_elf_sections,
     parse_elf_symbols,
 )
+from .index_ingest import ingest_structured_artifacts
+from .models import (
+    AnalysisReport,
+    FrontendSettings,
+    LiveProcessSettings,
+    LlmAssistSettings,
+    OutputSettings,
+    PortingSettings,
+    RuntimeTraceSettings,
+)
+from .output_organizer import organize_output_view
+from .plugins import build_analyzers, resolve_plugin_dirs
+from .recovery_insights import write_recovery_insights
+from .reporting import write_json_report, write_markdown_report
 from .utils import (
     ensure_dir,
     extract_ascii_strings,
     is_probable_binary,
     parse_pe_cli_metadata,
+    parse_pe_codeview_records,
     parse_pe_imports,
     parse_pe_metadata,
     parse_pe_sections,
-    parse_pe_codeview_records,
-    read_pe_version_info,
     read_binary_head,
+    read_pe_version_info,
     safe_slug,
 )
 

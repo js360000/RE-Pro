@@ -5,12 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analyzers.porting import generate_architecture_port_from_run
 from re_pro.engine import ReverseEngineeringEngine
 from re_pro.models import PortingSettings
-
+from tests import _path_setup  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MSVC_RTTI_FIXTURE_EXE = REPO_ROOT / "samples" / "fixtures" / "msvc_rtti_demo" / "build" / "x64" / "msvc_rtti_demo.exe"

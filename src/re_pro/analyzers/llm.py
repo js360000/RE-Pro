@@ -6,12 +6,9 @@ import subprocess
 import time
 from pathlib import Path
 
-from ..background_launch import build_re_pro_background_command
-from ..background_launch import build_re_pro_background_env
-from ..background_launch import re_pro_background_cwd
-from ..llm_auth import llm_auth_available
-from ..llm_auth import llm_auth_missing_message
+from ..background_launch import build_re_pro_background_command, build_re_pro_background_env, re_pro_background_cwd
 from ..llm_assist import run_llm_assist_job
+from ..llm_auth import llm_auth_available, llm_auth_missing_message
 from ..utils import ensure_dir, safe_slug
 from .base import Analyzer
 
@@ -274,7 +271,6 @@ class LLMAssistAnalyzer(Analyzer):
     def _artifact_priority(artifact) -> int:
         text = f"{artifact.description} {artifact.path}".lower()
         path = Path(artifact.path)
-        name = path.name.lower()
         if path.is_dir():
             if "class_pseudo_cpp" in text or "class-scoped" in text:
                 return 2

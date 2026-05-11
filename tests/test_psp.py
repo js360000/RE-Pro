@@ -6,17 +6,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from re_pro.psp import (
+    PARAM_SFO_JSON_NAME,
+    PBP_HEADER_SIZE,
+    PBP_MAGIC,
+    PBP_SECTION_FILENAMES,
+    build_param_sfo,
+    extract_pbp,
+    parse_param_sfo,
+    parse_pbp,
+    rebuild_pbp_with_overlay,
+)
 from tests import _path_setup  # noqa: F401
-
-from re_pro.psp import PBP_HEADER_SIZE
-from re_pro.psp import PBP_MAGIC
-from re_pro.psp import PBP_SECTION_FILENAMES
-from re_pro.psp import PARAM_SFO_JSON_NAME
-from re_pro.psp import build_param_sfo
-from re_pro.psp import extract_pbp
-from re_pro.psp import parse_param_sfo
-from re_pro.psp import parse_pbp
-from re_pro.psp import rebuild_pbp_with_overlay
 
 
 def make_param_sfo(title: str = "Demo Game") -> bytes:

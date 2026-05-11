@@ -5,11 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
-from re_pro.models import AnalysisReport
-from re_pro.models import OutputSettings
+from re_pro.models import AnalysisReport, OutputSettings
 from re_pro.output_organizer import organize_output_view
+from tests import _path_setup  # noqa: F401
 
 
 class OutputOrganizerTests(unittest.TestCase):

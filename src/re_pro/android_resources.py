@@ -5,7 +5,6 @@ from pathlib import Path
 
 from .utils import sanitize_text
 
-
 RES_TABLE_TYPE = 0x0002
 RES_TABLE_PACKAGE_TYPE = 0x0200
 

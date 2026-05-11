@@ -6,12 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.console_formats import detect_console_formats
 from re_pro.engine import ReverseEngineeringEngine
 from re_pro.psp import build_param_sfo
-
+from tests import _path_setup  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PS2_ELF_SAMPLE = REPO_ROOT / "samples" / "OPNPS2LD.ELF"

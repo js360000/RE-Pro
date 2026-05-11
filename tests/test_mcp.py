@@ -5,10 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.mcp_launch import build_mcp_launch_details
 from re_pro.mcp_server import build_mcp_server
+from tests import _path_setup  # noqa: F401
 
 
 class McpServerTests(unittest.TestCase):

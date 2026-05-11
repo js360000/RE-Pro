@@ -1,25 +1,21 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import struct
 import tempfile
 import unittest
 import zipfile
+from pathlib import Path
 
 from re_pro.models import AnalysisReport
-from re_pro.psarc import extract_psarc
-from re_pro.psarc import pack_psarc_from_mapping
-from re_pro.psp import PBP_HEADER_SIZE
-from re_pro.psp import PBP_MAGIC
-from re_pro.psp import PBP_SECTION_FILENAMES
-from re_pro.psp import build_param_sfo
-from re_pro.psp import parse_param_sfo
-from re_pro.psp import parse_pbp
-from re_pro.workspace_browser import build_browser_workspace
-from re_pro.workspace_browser import patch_browser_node_bytes
-from re_pro.workspace_browser import read_browser_node
-from re_pro.workspace_browser import write_browser_node
+from re_pro.psarc import extract_psarc, pack_psarc_from_mapping
+from re_pro.psp import PBP_HEADER_SIZE, PBP_MAGIC, PBP_SECTION_FILENAMES, build_param_sfo, parse_param_sfo, parse_pbp
+from re_pro.workspace_browser import (
+    build_browser_workspace,
+    patch_browser_node_bytes,
+    read_browser_node,
+    write_browser_node,
+)
 
 
 class WorkspaceBrowserTests(unittest.TestCase):

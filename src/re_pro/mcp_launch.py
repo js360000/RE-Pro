@@ -8,8 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .background_launch import build_re_pro_background_command
-from .background_launch import build_re_pro_background_env
+from .background_launch import build_re_pro_background_command, build_re_pro_background_env
 from .utils import ensure_dir
 
 

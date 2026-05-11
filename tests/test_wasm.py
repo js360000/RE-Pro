@@ -5,10 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.engine import ReverseEngineeringEngine
 from re_pro.wasm import parse_wasm_module
+from tests import _path_setup  # noqa: F401
 
 
 class WasmAnalyzerTests(unittest.TestCase):

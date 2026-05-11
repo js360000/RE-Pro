@@ -19,7 +19,7 @@ class LlmAssistSettings:
     run_recompile_checks: bool = True
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object] | None) -> "LlmAssistSettings":
+    def from_dict(cls, payload: dict[str, object] | None) -> LlmAssistSettings:
         payload = payload or {}
         return cls(
             enabled=bool(payload.get("enabled", False)),
@@ -47,7 +47,7 @@ class RuntimeTraceSettings:
     use_frida: bool = True
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object] | None) -> "RuntimeTraceSettings":
+    def from_dict(cls, payload: dict[str, object] | None) -> RuntimeTraceSettings:
         payload = payload or {}
         return cls(
             enabled=bool(payload.get("enabled", False)),
@@ -71,7 +71,7 @@ class LiveProcessSettings:
     include_all_readable: bool = False
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object] | None) -> "LiveProcessSettings":
+    def from_dict(cls, payload: dict[str, object] | None) -> LiveProcessSettings:
         payload = payload or {}
         return cls(
             enabled=bool(payload.get("enabled", False)),
@@ -96,7 +96,7 @@ class PortingSettings:
     mode: str = "heuristic"
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object] | None) -> "PortingSettings":
+    def from_dict(cls, payload: dict[str, object] | None) -> PortingSettings:
         payload = payload or {}
         return cls(
             enabled=bool(payload.get("enabled", False)),
@@ -114,7 +114,7 @@ class FrontendSettings:
     beautify_bundles: bool = False
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object] | None) -> "FrontendSettings":
+    def from_dict(cls, payload: dict[str, object] | None) -> FrontendSettings:
         payload = payload or {}
         return cls(
             beautify_bundles=bool(payload.get("beautify_bundles", False)),
@@ -140,7 +140,7 @@ class OutputSettings:
     max_run_artifact_count: int = 0
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object] | None) -> "OutputSettings":
+    def from_dict(cls, payload: dict[str, object] | None) -> OutputSettings:
         payload = payload or {}
         return cls(
             enabled=bool(payload.get("enabled", False)),

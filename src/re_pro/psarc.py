@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import hashlib
 import json
 import lzma
-from pathlib import Path
 import struct
-from typing import Any, Iterable
 import zlib
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable
 
 from .utils import ensure_dir, sanitize_relative_source_path
-
 
 PSARC_MAGIC = b"PSAR"
 PSARC_HEADER_SIZE = 0x20

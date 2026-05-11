@@ -8,16 +8,12 @@ import zipfile
 from pathlib import Path
 
 from ..android_resources import parse_resources_arsc
-from ..background_launch import build_re_pro_background_command
-from ..background_launch import build_re_pro_background_env
-from ..background_launch import re_pro_background_cwd
+from ..background_launch import build_re_pro_background_command, build_re_pro_background_env, re_pro_background_cwd
 from ..dex import is_dex_file, parse_dex_metadata
 from ..sourcemap import restore_sources_from_map
-from ..tooling import REPO_ROOT
 from ..tooling import resolve_command, resolve_tool_path, run_command_logged
 from ..utils import ensure_dir
 from .base import Analyzer
-
 
 ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 

@@ -5,9 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.fixture_regression import EXPECTED_RECOVERY_CAPABILITIES, validate_msvc_fixture_run
+from tests import _path_setup  # noqa: F401
 
 
 class FixtureRegressionTests(unittest.TestCase):

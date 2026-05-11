@@ -5,9 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analysis_diff import compare_analysis_runs
+from tests import _path_setup  # noqa: F401
 
 
 class AnalysisDiffTests(unittest.TestCase):

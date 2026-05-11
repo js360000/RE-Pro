@@ -7,10 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.cli import main
 from re_pro.models import AnalysisReport
+from tests import _path_setup  # noqa: F401
 
 
 class CliArchitecturePortTests(unittest.TestCase):

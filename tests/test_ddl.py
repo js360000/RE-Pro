@@ -5,11 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from re_pro.ddl import parse_ddl_from_bytes, parse_ddl_text, write_ddl_struct_sources
 from tests import _path_setup  # noqa: F401
-
-from re_pro.ddl import parse_ddl_from_bytes
-from re_pro.ddl import parse_ddl_text
-from re_pro.ddl import write_ddl_struct_sources
 
 
 class DdlParserTests(unittest.TestCase):

@@ -7,11 +7,7 @@ from types import SimpleNamespace
 from typing import Callable
 
 from ..elf import parse_elf_metadata
-from ..models import AnalysisFinding
-from ..models import AnalysisReport
-from ..models import Artifact
-from ..models import PortingSettings
-from ..models import RecoveredSource
+from ..models import AnalysisFinding, AnalysisReport, Artifact, PortingSettings, RecoveredSource
 from ..recompile import create_recompile_workspace
 from ..reporting import write_json_report, write_markdown_report
 from ..utils import ensure_dir, parse_pe_metadata, safe_slug

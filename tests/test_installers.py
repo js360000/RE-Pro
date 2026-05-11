@@ -5,11 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analyzers.installer import InstallerAnalyzer
 from re_pro.engine import AnalysisContext
 from re_pro.models import AnalysisReport
+from tests import _path_setup  # noqa: F401
 
 
 class InstallerTests(unittest.TestCase):

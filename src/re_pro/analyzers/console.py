@@ -5,16 +5,9 @@ from pathlib import Path
 
 from ..console_formats import detect_console_formats
 from ..psarc import PsarcFormatError, extract_psarc, parse_psarc
-from ..psp import PspFormatError
-from ..psp import extract_pbp
-from ..psp import parse_data_psar
-from ..psp import parse_data_psp
-from ..psp import parse_param_sfo_file
-from ..psp import parse_pbp
-from ..psp_tools import attempt_psp_tooling
-from ..psp_tools import write_psp_tool_manifest
-from ..sce_decrypt import attempt_sce_unpack
-from ..sce_decrypt import write_sce_unpack_manifest
+from ..psp import PspFormatError, extract_pbp, parse_data_psar, parse_data_psp, parse_param_sfo_file, parse_pbp
+from ..psp_tools import attempt_psp_tooling, write_psp_tool_manifest
+from ..sce_decrypt import attempt_sce_unpack, write_sce_unpack_manifest
 from ..utils import ensure_dir
 from .base import Analyzer
 

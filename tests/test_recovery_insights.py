@@ -5,10 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.models import AnalysisReport
 from re_pro.recovery_insights import write_recovery_insights
+from tests import _path_setup  # noqa: F401
 
 
 class RecoveryInsightTests(unittest.TestCase):

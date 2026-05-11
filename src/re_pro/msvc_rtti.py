@@ -6,7 +6,6 @@ from pathlib import Path
 
 from .utils import pe_offset_to_rva, pe_rva_to_offset
 
-
 TYPE_NAME_PATTERN = re.compile(rb"\.\?A[VUTW][^\x00\r\n]{3,220}?@@")
 
 

@@ -10,7 +10,6 @@ from typing import Any, Callable
 from .tooling import resolve_command, run_command_logged
 from .utils import ensure_dir, safe_slug
 
-
 SELF_FORMAT_IDS = {"sony-sce-self"}
 PKG_FORMAT_IDS = {"sony-pkg"}
 COMMAND_ENV = {

@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-import struct
 
-from tests import _path_setup  # noqa: F401
-
-from re_pro.elf import parse_elf_metadata, parse_elf_needed_libraries, parse_elf_program_headers, parse_elf_sections, parse_elf_symbols
 from re_pro.analyzers.native import NativeLanguageAnalyzer
+from re_pro.elf import (
+    parse_elf_metadata,
+    parse_elf_needed_libraries,
+    parse_elf_program_headers,
+    parse_elf_sections,
+    parse_elf_symbols,
+)
 from re_pro.engine import AnalysisContext
-from re_pro.msvc_rtti import _build_class_entries
 from re_pro.models import AnalysisReport
+from re_pro.msvc_rtti import _build_class_entries
 from re_pro.utils import parse_pe_metadata, parse_pe_sections
+from tests import _path_setup  # noqa: F401
 
 
 class NativeAnalyzerTests(unittest.TestCase):

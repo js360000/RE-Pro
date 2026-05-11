@@ -10,15 +10,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analyzers.llm import LLMAssistAnalyzer
 from re_pro.engine import AnalysisContext
-from re_pro.llm_auth import llm_auth_available
-from re_pro.llm_auth import llm_auth_status
-from re_pro.llm_auth import load_codex_oauth_token
 from re_pro.llm_assist import _dispatch_tool_call, run_llm_assist_job
+from re_pro.llm_auth import llm_auth_available, llm_auth_status, load_codex_oauth_token
 from re_pro.models import AnalysisReport, LlmAssistSettings
+from tests import _path_setup  # noqa: F401
 
 
 class _FakeResponses:

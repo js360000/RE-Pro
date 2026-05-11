@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import csv
-from datetime import UTC, datetime
-import io
 import importlib.metadata
+import io
 import json
 import platform
-import sysconfig
-import sys
 import subprocess
+import sys
+import sysconfig
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..tooling import resolve_tool_path, run_command

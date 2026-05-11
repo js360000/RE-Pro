@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.index_workflows import build_entity_workflow
+from tests import _path_setup  # noqa: F401
 
 
 class IndexWorkflowTests(unittest.TestCase):

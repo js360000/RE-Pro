@@ -13,10 +13,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtWidgets import QApplication
 
-from re_pro.gui import MainWindow
 import re_pro.profiles as profile_module
-from re_pro.profiles import build_analysis_profile
-from re_pro.profiles import save_profile
+from re_pro.gui import MainWindow
+from re_pro.profiles import build_analysis_profile, save_profile
 
 
 class GuiProfileTests(unittest.TestCase):

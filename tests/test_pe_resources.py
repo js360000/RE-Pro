@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.pe_resources import _build_ico_from_group
+from tests import _path_setup  # noqa: F401
 
 
 class PEResourceTests(unittest.TestCase):

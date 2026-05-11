@@ -4,16 +4,17 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .json_schemas import load_analysis_index, load_report
 from .utils import ensure_dir
 
 
 def compare_analysis_runs(base_run_dir: Path, head_run_dir: Path, output_dir: Path | None = None) -> dict[str, Any]:
     base_run_dir = base_run_dir.resolve()
     head_run_dir = head_run_dir.resolve()
-    base_report = _load_json(base_run_dir / "report.json")
-    head_report = _load_json(head_run_dir / "report.json")
-    base_index = _load_json(base_run_dir / "analysis_index.json")
-    head_index = _load_json(head_run_dir / "analysis_index.json")
+    base_report = load_report(base_run_dir / "report.json")
+    head_report = load_report(head_run_dir / "report.json")
+    base_index = load_analysis_index(base_run_dir / "analysis_index.json")
+    head_index = load_analysis_index(head_run_dir / "analysis_index.json")
 
     diff = {
         "base_run_dir": str(base_run_dir),
@@ -65,7 +66,7 @@ def compare_analysis_runs(base_run_dir: Path, head_run_dir: Path, output_dir: Pa
 def create_patch_bundle_from_runs(base_run_dir: Path, head_run_dir: Path, output_dir: Path) -> dict[str, Any]:
     output_dir = ensure_dir(output_dir.resolve())
     diff = compare_analysis_runs(base_run_dir, head_run_dir)
-    head_report = _load_json(head_run_dir.resolve() / "report.json")
+    head_report = load_report(head_run_dir.resolve() / "report.json")
     files_root = ensure_dir(output_dir / "files")
     operations: list[dict[str, Any]] = []
 
@@ -126,13 +127,6 @@ def create_patch_bundle_from_runs(base_run_dir: Path, head_run_dir: Path, output
         "summary_path": str(summary_path),
         "operation_count": len(operations),
     }
-
-
-def _load_json(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"Expected JSON object in {path}")
-    return payload
 
 
 def _list_delta(base_items: list[Any], head_items: list[Any]) -> dict[str, list[Any]]:

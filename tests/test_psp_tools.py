@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+from re_pro.psp_tools import encrypt_data_psp, pack_data_psar, psp_tool_status
 from tests import _path_setup  # noqa: F401
-
-from re_pro.psp_tools import encrypt_data_psp
-from re_pro.psp_tools import pack_data_psar
-from re_pro.psp_tools import psp_tool_status
 
 
 class PspToolAdapterTests(unittest.TestCase):

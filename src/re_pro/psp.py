@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import struct
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .utils import ensure_dir, sanitize_relative_source_path
-
 
 PBP_MAGIC = b"\x00PBP"
 PARAM_SFO_MAGIC = b"\x00PSF"

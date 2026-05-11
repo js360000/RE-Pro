@@ -6,13 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analyzers.dotnet import DotNetAnalyzer
 from re_pro.dotnet_bundle import extract_dotnet_single_file_bundle, parse_dotnet_single_file_bundle
 from re_pro.engine import AnalysisContext
 from re_pro.models import AnalysisReport
 from re_pro.utils import parse_pe_cli_metadata
+from tests import _path_setup  # noqa: F401
 
 
 class DotNetAnalyzerTests(unittest.TestCase):

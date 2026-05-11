@@ -7,7 +7,6 @@ from typing import Any
 
 from .utils import extract_ascii_strings, safe_slug, sanitize_text
 
-
 DDL_SUFFIXES = {
     ".ddl",
     ".ddls",

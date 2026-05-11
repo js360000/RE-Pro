@@ -7,7 +7,6 @@ from pathlib import Path
 
 from .utils import ensure_dir, safe_output_path
 
-
 BUNDLE_SIGNATURE = bytes.fromhex(
     "8b1202b96a612038727b930214d7a03213f5b9e6efae3318ee3b2dce24b36aae"
 )

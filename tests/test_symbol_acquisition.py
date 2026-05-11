@@ -5,9 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.symbol_acquisition import acquire_pdbs_from_symbol_servers
+from tests import _path_setup  # noqa: F401
 
 
 class _FakeResponse:

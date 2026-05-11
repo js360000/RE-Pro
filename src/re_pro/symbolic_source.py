@@ -5,7 +5,6 @@ from pathlib import Path
 
 from .utils import ensure_dir, safe_output_path
 
-
 SOURCE_PATH_PATTERN = re.compile(
     r"([A-Za-z]:[\\/][^\r\n\t\"'<>|?*]+\.(?:cpp|cxx|cc|c|hpp|hxx|hh|h|inl))"
     r"|((?:[\w.\-]+/)+[\w.\-]+\.(?:cpp|cxx|cc|c|hpp|hxx|hh|h|inl))",

@@ -6,11 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analyzers.linux_package import LinuxPackageAnalyzer
-from re_pro.engine import AnalysisContext, ReverseEngineeringEngine
+from re_pro.engine import AnalysisContext
 from re_pro.models import AnalysisReport
+from tests import _path_setup  # noqa: F401
 
 
 class LinuxPackageAnalyzerTests(unittest.TestCase):

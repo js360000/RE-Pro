@@ -5,12 +5,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .models import AnalysisReport
-from .models import Artifact
-from .models import OutputSettings
-from .utils import ensure_dir
-from .utils import safe_slug
-
+from .models import AnalysisReport, Artifact, OutputSettings
+from .utils import ensure_dir, safe_slug
 
 PROFILE_INCLUDES: dict[str, set[str]] = {
     "full": {"all"},

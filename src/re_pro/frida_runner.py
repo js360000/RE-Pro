@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
-
 
 FRIDA_TRACE_SCRIPT = r"""
 function sendEvent(payload) {

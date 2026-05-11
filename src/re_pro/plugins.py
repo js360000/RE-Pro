@@ -12,7 +12,6 @@ from typing import Callable
 from .analyzers import builtin_analyzers
 from .analyzers.base import Analyzer
 
-
 ENTRY_POINT_GROUP = "re_pro.analyzers"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PLUGIN_DIR = REPO_ROOT / "plugins"
@@ -103,13 +102,13 @@ def _materialize_module(
     logger: Callable[[str], None] | None = None,
 ) -> list[Analyzer]:
     if hasattr(module, "register_analyzers"):
-        register = getattr(module, "register_analyzers")
+        register = module.register_analyzers
         if not callable(register):
             raise TypeError(f"{plugin_path.name}: register_analyzers exists but is not callable")
         return _materialize_plugin_object(register(), source=str(plugin_path), logger=logger)
 
     if hasattr(module, "ANALYZERS"):
-        return _materialize_plugin_object(getattr(module, "ANALYZERS"), source=str(plugin_path), logger=logger)
+        return _materialize_plugin_object(module.ANALYZERS, source=str(plugin_path), logger=logger)
 
     classes = [
         value

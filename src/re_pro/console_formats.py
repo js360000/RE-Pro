@@ -4,13 +4,14 @@ import struct
 from pathlib import Path
 from typing import Any
 
-from .psp import PARAM_SFO_MAGIC
-from .psp import PBP_SECTION_FILENAMES
-from .psp import PBP_SECTION_NAMES
-from .psp import parse_data_psar
-from .psp import parse_data_psp
-from .psp import parse_param_sfo
-
+from .psp import (
+    PARAM_SFO_MAGIC,
+    PBP_SECTION_FILENAMES,
+    PBP_SECTION_NAMES,
+    parse_data_psar,
+    parse_data_psp,
+    parse_param_sfo,
+)
 
 MAX_HEADER_BYTES = 4 * 1024 * 1024
 

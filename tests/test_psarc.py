@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
-
-from tests import _path_setup  # noqa: F401
+from pathlib import Path
 
 from re_pro.engine import ReverseEngineeringEngine
-from re_pro.psarc import extract_psarc
-from re_pro.psarc import pack_psarc_from_mapping
-from re_pro.psarc import parse_psarc
-from re_pro.psarc import rebuild_psarc_with_overlay
+from re_pro.psarc import extract_psarc, pack_psarc_from_mapping, parse_psarc, rebuild_psarc_with_overlay
+from tests import _path_setup  # noqa: F401
 
 
 class PsarcArchiveTests(unittest.TestCase):

@@ -22,7 +22,7 @@ def extract_asar_archive(asar_path: Path, destination_base: Path, *, cwd: Path |
             continue
         if code == 0:
             return destination, ""
-        errors.append(f"{Path(command[0]).name}: {(stderr or '').strip() or 'exit code %d' % code}")
+        errors.append(f"{Path(command[0]).name}: {(stderr or '').strip() or f'exit code {code}'}")
     destination = _fresh_destination(destination_base)
     try:
         extract_asar_archive_native(asar_path, destination)

@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from .models import LlmAssistSettings
-from .models import FrontendSettings
-from .models import LiveProcessSettings
-from .models import PortingSettings
-from .models import OutputSettings
-from .models import RuntimeTraceSettings
+from .models import (
+    FrontendSettings,
+    LiveProcessSettings,
+    LlmAssistSettings,
+    OutputSettings,
+    PortingSettings,
+    RuntimeTraceSettings,
+)
 from .utils import ensure_dir
-
 
 PROFILE_SCHEMA_VERSION = 1
 

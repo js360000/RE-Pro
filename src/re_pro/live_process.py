@@ -2,19 +2,16 @@ from __future__ import annotations
 
 import csv
 import ctypes
-from ctypes import wintypes
-from dataclasses import asdict
 import io
 import json
 import platform
-import re
+from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
 from .models import LiveProcessSettings
 from .tooling import run_command
-from .utils import ensure_dir, extract_ascii_strings, safe_slug
-
+from .utils import ensure_dir, extract_ascii_strings
 
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_READ = 0x0010

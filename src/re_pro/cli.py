@@ -12,34 +12,36 @@ from .analyzers.porting import generate_architecture_port_from_run
 from .dependency_installer import DependencyInstaller
 from .engine import ReverseEngineeringEngine
 from .fixture_regression import run_msvc_fixture_regression
-from .live_process import capture_live_process
-from .live_process import list_live_processes
-from .live_process import resolve_live_process
+from .live_process import capture_live_process, list_live_processes, resolve_live_process
 from .llm_assist import run_llm_assist_job
-from .mcp_launch import build_mcp_launch_details
-from .mcp_launch import start_mcp_server_process
+from .mcp_launch import build_mcp_launch_details, start_mcp_server_process
 from .mcp_server import main as mcp_server_main
-from .models import LlmAssistSettings
-from .models import FrontendSettings
-from .models import LiveProcessSettings
-from .models import OutputSettings
-from .models import PortingSettings
-from .models import RuntimeTraceSettings
-from .profiles import analysis_settings_from_profile
-from .profiles import build_analysis_profile
-from .profiles import build_package_action_profile
-from .profiles import list_profiles
-from .profiles import load_profile
-from .profiles import package_settings_from_profile
-from .profiles import save_profile
+from .models import (
+    FrontendSettings,
+    LiveProcessSettings,
+    LlmAssistSettings,
+    OutputSettings,
+    PortingSettings,
+    RuntimeTraceSettings,
+)
+from .profiles import (
+    analysis_settings_from_profile,
+    build_analysis_profile,
+    build_package_action_profile,
+    list_profiles,
+    load_profile,
+    package_settings_from_profile,
+    save_profile,
+)
 from .recompile import run_packaging_action
 from .tooling import resolve_command, run_command_logged
-from .workspace_browser import build_browser_workspace
-from .workspace_browser import list_browser_nodes
-from .workspace_browser import patch_browser_node_bytes
-from .workspace_browser import read_browser_node
-from .workspace_browser import write_browser_node
-
+from .workspace_browser import (
+    build_browser_workspace,
+    list_browser_nodes,
+    patch_browser_node_bytes,
+    read_browser_node,
+    write_browser_node,
+)
 
 DEFAULT_OUTPUT_ROOT = "analysis_output"
 DEFAULT_TOOLS_ROOT = "tools"

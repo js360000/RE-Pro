@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from .llm_auth import resolve_codex_auth_path
+from .llm_auth import build_openai_client_for_settings, llm_auth_status, resolve_codex_auth_path
 from .recompile import (
     create_recompile_workspace,
     detect_toolchains,
@@ -16,8 +16,6 @@ from .recompile import (
     run_recompile_command,
     validate_reconstruction_file,
 )
-from .llm_auth import build_openai_client_for_settings
-from .llm_auth import llm_auth_status
 from .utils import ensure_dir, safe_output_path
 
 

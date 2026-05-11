@@ -5,13 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
-from re_pro.analyzers.porting import PortingAdvisorAnalyzer
-from re_pro.analyzers.porting import generate_architecture_port_from_run
+from re_pro.analyzers.porting import PortingAdvisorAnalyzer, generate_architecture_port_from_run
 from re_pro.engine import AnalysisContext
-from re_pro.models import AnalysisReport
-from re_pro.models import PortingSettings
+from re_pro.models import AnalysisReport, PortingSettings
+from tests import _path_setup  # noqa: F401
 
 
 class PortingAdvisorTests(unittest.TestCase):

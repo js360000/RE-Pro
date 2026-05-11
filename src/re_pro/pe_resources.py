@@ -2,32 +2,38 @@ from __future__ import annotations
 
 import ctypes
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .utils import ensure_dir, sanitize_text, safe_slug
+from .utils import ensure_dir, safe_slug, sanitize_text
 
 LOAD_LIBRARY_AS_DATAFILE = 0x00000002
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-_kernel32.LoadLibraryExW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_uint32]
-_kernel32.LoadLibraryExW.restype = ctypes.c_void_p
-_kernel32.FreeLibrary.argtypes = [ctypes.c_void_p]
-_kernel32.FreeLibrary.restype = ctypes.c_bool
-_kernel32.EnumResourceTypesW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
-_kernel32.EnumResourceTypesW.restype = ctypes.c_bool
-_kernel32.EnumResourceNamesW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
-_kernel32.EnumResourceNamesW.restype = ctypes.c_bool
-_kernel32.EnumResourceLanguagesW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
-_kernel32.EnumResourceLanguagesW.restype = ctypes.c_bool
-_kernel32.FindResourceExW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ushort]
-_kernel32.FindResourceExW.restype = ctypes.c_void_p
-_kernel32.SizeofResource.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-_kernel32.SizeofResource.restype = ctypes.c_uint32
-_kernel32.LoadResource.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-_kernel32.LoadResource.restype = ctypes.c_void_p
-_kernel32.LockResource.argtypes = [ctypes.c_void_p]
-_kernel32.LockResource.restype = ctypes.c_void_p
+# The Windows resource APIs are only available on win32; importing this module
+# on other platforms must remain side-effect free so the rest of the package
+# (and the test suite) can load.
+_kernel32: ctypes.WinDLL | None = None  # type: ignore[name-defined]
+if sys.platform == "win32":
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.LoadLibraryExW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_uint32]
+    _kernel32.LoadLibraryExW.restype = ctypes.c_void_p
+    _kernel32.FreeLibrary.argtypes = [ctypes.c_void_p]
+    _kernel32.FreeLibrary.restype = ctypes.c_bool
+    _kernel32.EnumResourceTypesW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
+    _kernel32.EnumResourceTypesW.restype = ctypes.c_bool
+    _kernel32.EnumResourceNamesW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
+    _kernel32.EnumResourceNamesW.restype = ctypes.c_bool
+    _kernel32.EnumResourceLanguagesW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
+    _kernel32.EnumResourceLanguagesW.restype = ctypes.c_bool
+    _kernel32.FindResourceExW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ushort]
+    _kernel32.FindResourceExW.restype = ctypes.c_void_p
+    _kernel32.SizeofResource.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    _kernel32.SizeofResource.restype = ctypes.c_uint32
+    _kernel32.LoadResource.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    _kernel32.LoadResource.restype = ctypes.c_void_p
+    _kernel32.LockResource.argtypes = [ctypes.c_void_p]
+    _kernel32.LockResource.restype = ctypes.c_void_p
 
 RESOURCE_TYPE_NAMES: dict[int, str] = {
     1: "CURSOR",
@@ -70,6 +76,8 @@ class _RawResourceEntry:
 
 
 def extract_pe_resources(target: Path, destination_root: Path) -> tuple[list[PEResourceEntry], Path]:
+    if _kernel32 is None:
+        return [], destination_root / "pe_resources.json"
     handle = _kernel32.LoadLibraryExW(str(target), None, LOAD_LIBRARY_AS_DATAFILE)
     if not handle:
         return [], destination_root / "pe_resources.json"

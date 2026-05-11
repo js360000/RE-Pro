@@ -7,11 +7,15 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analysis_diff import create_patch_bundle_from_runs
 from re_pro.psarc import extract_psarc, pack_psarc_from_mapping, parse_psarc
-from re_pro.recompile import apply_patch_bundle, create_recompile_workspace, rebuild_zip_archive_with_overlay, run_packaging_action
+from re_pro.recompile import (
+    apply_patch_bundle,
+    create_recompile_workspace,
+    rebuild_zip_archive_with_overlay,
+    run_packaging_action,
+)
+from tests import _path_setup  # noqa: F401
 
 
 class RecompileWorkflowTests(unittest.TestCase):

@@ -7,7 +7,6 @@ from pathlib import Path
 
 from .engine import ReverseEngineeringEngine
 
-
 MSVC_FIXTURE_RELATIVE_ROOT = Path("samples") / "fixtures" / "msvc_rtti_demo"
 MSVC_FIXTURE_BUILD_SCRIPT = Path("samples") / "fixtures" / "build_msvc_fixture.ps1"
 EXPECTED_MSVS_FIXTURE_CLASSES = {

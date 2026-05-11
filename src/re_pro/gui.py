@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import QThread, QTimer, Qt, QUrl, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -21,8 +21,8 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QPlainTextEdit,
+    QPushButton,
     QScrollArea,
     QSplitter,
     QStackedWidget,
@@ -36,28 +36,21 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from .engine import ReverseEngineeringEngine
 from .dependency_installer import DependencyInstaller
+from .engine import ReverseEngineeringEngine
 from .index_workflows import build_entity_workflow
 from .live_process import resolve_live_process
-from .mcp_launch import build_mcp_launch_details
-from .mcp_launch import start_mcp_server_process
-from .mcp_launch import stop_mcp_server_process
-from .models import LiveProcessSettings
-from .models import LlmAssistSettings
-from .models import FrontendSettings
-from .models import OutputSettings
-from .models import PortingSettings
-from .models import RuntimeTraceSettings
-from .profiles import analysis_settings_from_profile
-from .profiles import build_analysis_profile
-from .profiles import list_profiles
-from .profiles import load_profile
-from .profiles import save_profile
-from .workspace_browser import build_browser_workspace
-from .workspace_browser import patch_browser_node_bytes
-from .workspace_browser import read_browser_node
-from .workspace_browser import write_browser_node
+from .mcp_launch import build_mcp_launch_details, start_mcp_server_process, stop_mcp_server_process
+from .models import (
+    FrontendSettings,
+    LiveProcessSettings,
+    LlmAssistSettings,
+    OutputSettings,
+    PortingSettings,
+    RuntimeTraceSettings,
+)
+from .profiles import analysis_settings_from_profile, build_analysis_profile, list_profiles, load_profile, save_profile
+from .workspace_browser import build_browser_workspace, patch_browser_node_bytes, read_browser_node, write_browser_node
 
 
 class AnalysisWorker(QThread):

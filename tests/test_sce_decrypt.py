@@ -6,12 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.analyzers.console import ConsoleFormatAnalyzer
 from re_pro.engine import AnalysisContext
 from re_pro.models import AnalysisReport
 from re_pro.sce_decrypt import attempt_sce_unpack
+from tests import _path_setup  # noqa: F401
 
 
 class SceDecryptTests(unittest.TestCase):

@@ -197,7 +197,6 @@ def parse_pe_imports(path: Path) -> list[str]:
 
     optional_header_offset = pe_offset + 24
     optional_magic = struct.unpack_from("<H", data, optional_header_offset)[0]
-    optional_header_size = struct.unpack_from("<H", data, pe_offset + 20)[0]
     if optional_magic == 0x20B:
         data_directory_offset = optional_header_offset + 112
     elif optional_magic == 0x10B:

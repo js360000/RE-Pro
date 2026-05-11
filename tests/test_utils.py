@@ -5,9 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.utils import parse_pe_codeview_records, parse_pe_metadata, sanitize_relative_source_path
+from tests import _path_setup  # noqa: F401
 
 
 class PETests(unittest.TestCase):

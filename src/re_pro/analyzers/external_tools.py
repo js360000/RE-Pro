@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import os
 import json
-import subprocess
+import os
 import shutil
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..api_semantics import refine_targeted_decompilation
-from ..background_launch import build_re_pro_background_command
-from ..background_launch import build_re_pro_background_env
-from ..background_launch import re_pro_background_cwd
+from ..background_launch import build_re_pro_background_command, build_re_pro_background_env, re_pro_background_cwd
 from ..msvc_pseudo_cpp import enrich_recovered_classes, write_pseudo_class_sources
-from ..tooling import REPO_ROOT, get_ghidra_install_root, list_ghidra_languages, resolve_command, run_command_logged
+from ..tooling import get_ghidra_install_root, list_ghidra_languages, resolve_command, run_command_logged
 from ..utils import ensure_dir, safe_slug
 from .base import Analyzer
 
@@ -604,7 +602,7 @@ class ExternalToolAnalyzer(Analyzer):
             return cls._run_ghidra_job(payload)
         if job_type == "pe_tools":
             return cls._run_pe_tools_job(payload)
-        raise ValueError("Unknown external tool job type: %s" % job_type)
+        raise ValueError(f"Unknown external tool job type: {job_type}")
 
     @classmethod
     def _run_ghidra_job(cls, payload: dict[str, object]) -> int:

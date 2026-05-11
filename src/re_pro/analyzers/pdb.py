@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..symbolic_source import extract_source_file_hints, extract_symbol_names, synthesize_symbolic_source_tree
 from ..symbol_acquisition import acquire_pdbs_from_symbol_servers, download_with_dotnet_symbol
+from ..symbolic_source import extract_source_file_hints, extract_symbol_names, synthesize_symbolic_source_tree
 from ..tooling import resolve_command, run_command
 from ..utils import ensure_dir, safe_slug
 from .base import Analyzer

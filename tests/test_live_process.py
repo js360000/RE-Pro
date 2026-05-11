@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
-import zipfile
 
 from re_pro.analyzers.live_process import LiveProcessAnalyzer
 from re_pro.engine import AnalysisContext
-from re_pro.live_process import capture_live_process
-from re_pro.live_process import list_live_processes
-from re_pro.models import AnalysisReport
-from re_pro.models import LiveProcessSettings
+from re_pro.live_process import capture_live_process, list_live_processes
+from re_pro.models import AnalysisReport, LiveProcessSettings
 
 
 class LiveProcessTests(unittest.TestCase):

@@ -8,11 +8,10 @@ from pathlib import Path
 
 import brotli
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.frontend_reconstruct import reconstruct_bundled_frontend_assets
 from re_pro.models import LlmAssistSettings
 from re_pro.tauri_extract import extract_tauri_assets, scan_tauri_asset_entries
+from tests import _path_setup  # noqa: F401
 
 
 class TauriExtractTests(unittest.TestCase):

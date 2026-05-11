@@ -5,8 +5,7 @@ from pathlib import Path
 
 from ..asar_tools import extract_asar_archive
 from ..frontend_reconstruct import reconstruct_bundled_frontend_assets
-from ..sourcemap import restore_sources_from_map
-from ..sourcemap import restore_inline_source_maps_from_file
+from ..sourcemap import restore_inline_source_maps_from_file, restore_sources_from_map
 from ..utils import ensure_dir
 from .base import Analyzer
 

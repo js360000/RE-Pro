@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.api_semantics import (
     infer_argument_hint_from_callee,
     infer_result_hint_from_callee,
     refine_targeted_decompilation,
 )
+from tests import _path_setup  # noqa: F401
 
 
 class ApiSemanticsTests(unittest.TestCase):

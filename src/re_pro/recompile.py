@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -11,7 +10,6 @@ from .psarc import is_psarc, pack_psarc_from_directory, rebuild_psarc_with_overl
 from .psp import is_pbp, rebuild_pbp_with_overlay
 from .tooling import resolve_command, run_command_logged
 from .utils import ensure_dir
-
 
 SUPPORTED_TOOLCHAINS = {
     "python": [["py", "-3"], ["python"]],

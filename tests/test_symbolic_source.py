@@ -4,9 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import _path_setup  # noqa: F401
-
 from re_pro.symbolic_source import extract_source_file_hints, extract_symbol_names, synthesize_symbolic_source_tree
+from tests import _path_setup  # noqa: F401
 
 
 class SymbolicSourceTests(unittest.TestCase):

@@ -108,7 +108,13 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]
-"src/re_pro/gui.py" = ["F401"]
+# Package __init__.py files deliberately re-export upstream names onto the
+# package namespace so that tests can patch and downstream callers can keep
+# their existing import paths after the monoliths were split into packages.
+"src/re_pro/gui/__init__.py" = ["F401"]
+"src/re_pro/analyzers/external_tools/__init__.py" = ["F401"]
+"src/re_pro/frontend_reconstruct/__init__.py" = ["F401"]
+"src/re_pro/msvc_pseudo_cpp/__init__.py" = ["F401"]
 
 [tool.ruff.format]
 quote-style = "double"

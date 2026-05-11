@@ -8,12 +8,24 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..api_semantics import refine_targeted_decompilation
-from ..background_launch import build_re_pro_background_command, build_re_pro_background_env, re_pro_background_cwd
-from ..msvc_pseudo_cpp import enrich_recovered_classes, write_pseudo_class_sources
-from ..tooling import get_ghidra_install_root, list_ghidra_languages, resolve_command, run_command_logged
-from ..utils import ensure_dir, safe_slug
-from .base import Analyzer
+# Late-binding indirection: tests patch
+# ``re_pro.analyzers.external_tools.resolve_command`` and
+# ``re_pro.analyzers.external_tools.list_ghidra_languages`` on the package
+# namespace. Accessing them via the package module at call time honors those
+# patches; a direct ``from ...tooling import resolve_command`` would bind the
+# original at import time and bypass the patch.
+from re_pro.analyzers import external_tools as _pkg
+
+from ...api_semantics import refine_targeted_decompilation
+from ...background_launch import (
+    build_re_pro_background_command,
+    build_re_pro_background_env,
+    re_pro_background_cwd,
+)
+from ...msvc_pseudo_cpp import enrich_recovered_classes, write_pseudo_class_sources
+from ...tooling import get_ghidra_install_root, run_command_logged
+from ...utils import ensure_dir, safe_slug
+from ..base import Analyzer
 
 
 class ExternalToolAnalyzer(Analyzer):
@@ -32,9 +44,9 @@ class ExternalToolAnalyzer(Analyzer):
             return
 
         ran_any = False
-        ghidra_available = resolve_command([["analyzeHeadless"], ["analyzeHeadless.bat"]]) is not None
-        rizin_available = resolve_command([["rizin"]]) is not None or resolve_command([["rz-bin"]]) is not None
-        radare2_available = resolve_command([["r2"], ["radare2"]]) is not None or resolve_command([["rabin2"]]) is not None
+        ghidra_available = _pkg.resolve_command([["analyzeHeadless"], ["analyzeHeadless.bat"]]) is not None
+        rizin_available = _pkg.resolve_command([["rizin"]]) is not None or _pkg.resolve_command([["rz-bin"]]) is not None
+        radare2_available = _pkg.resolve_command([["r2"], ["radare2"]]) is not None or _pkg.resolve_command([["rabin2"]]) is not None
         any_available = ghidra_available or rizin_available or radare2_available
         force_ghidra = ghidra_available and context.run_external_tools and self._should_force_ghidra(context, report)
 
@@ -54,7 +66,7 @@ class ExternalToolAnalyzer(Analyzer):
             report.add_note("No external reverse-engineering suites were detected. Install Ghidra, rizin, or radare2 for deeper analysis exports.")
 
     def _run_ghidra(self, context, report) -> bool:
-        command = resolve_command([["analyzeHeadless"], ["analyzeHeadless.bat"]])
+        command = _pkg.resolve_command([["analyzeHeadless"], ["analyzeHeadless.bat"]])
         if command is None:
             return False
 
@@ -166,7 +178,7 @@ class ExternalToolAnalyzer(Analyzer):
         ghidra_root = get_ghidra_install_root()
         if ghidra_root is None:
             return None
-        source_path = Path(__file__).resolve().parents[1] / "ghidra_scripts" / "REProExport.py"
+        source_path = Path(__file__).resolve().parents[2] / "ghidra_scripts" / "REProExport.py"
         if not source_path.exists():
             return None
         target_dir = ghidra_root / "Ghidra" / "Features" / "Base" / "ghidra_scripts"
@@ -177,10 +189,10 @@ class ExternalToolAnalyzer(Analyzer):
         return target_dir
 
     def _run_pe_tools(self, context, report) -> bool:
-        r2 = resolve_command([["r2"], ["radare2"]])
-        rabin2 = resolve_command([["rabin2"]])
-        rizin = resolve_command([["rizin"]])
-        rz_bin = resolve_command([["rz-bin"]])
+        r2 = _pkg.resolve_command([["r2"], ["radare2"]])
+        rabin2 = _pkg.resolve_command([["rabin2"]])
+        rizin = _pkg.resolve_command([["rizin"]])
+        rz_bin = _pkg.resolve_command([["rz-bin"]])
         if rizin is None and rz_bin is None and r2 is None and rabin2 is None:
             return False
 
@@ -268,7 +280,7 @@ class ExternalToolAnalyzer(Analyzer):
 
         endianness = str(context.elf_metadata.get("endianness", "little"))
         is_ps2 = "PlayStation 2 ELF" in report.frameworks
-        languages = list_ghidra_languages()
+        languages = _pkg.list_ghidra_languages()
         if is_ps2:
             plugin_language = cls._find_matching_ghidra_language(
                 languages,
@@ -612,7 +624,7 @@ class ExternalToolAnalyzer(Analyzer):
         script_log_path = Path(str(payload["script_log_path"]))
         status_path = project_root / "status.json"
         target = Path(str(payload["target"]))
-        command = resolve_command([["analyzeHeadless"], ["analyzeHeadless.bat"]])
+        command = _pkg.resolve_command([["analyzeHeadless"], ["analyzeHeadless.bat"]])
         script_dir = cls._stage_ghidra_script()
         started_at = cls._utcnow()
         if command is None or script_dir is None:
@@ -780,10 +792,10 @@ class ExternalToolAnalyzer(Analyzer):
 
         outputs: list[dict[str, str]] = []
         errors: list[str] = []
-        rizin = resolve_command([["rizin"]])
-        rz_bin = resolve_command([["rz-bin"]])
-        r2 = resolve_command([["r2"], ["radare2"]])
-        rabin2 = resolve_command([["rabin2"]])
+        rizin = _pkg.resolve_command([["rizin"]])
+        rz_bin = _pkg.resolve_command([["rz-bin"]])
+        r2 = _pkg.resolve_command([["r2"], ["radare2"]])
+        rabin2 = _pkg.resolve_command([["rabin2"]])
 
         def _remaining_timeout(requested: int) -> int:
             remaining = int(cls.PE_TOOL_TOTAL_TIMEOUT_SECONDS - (time.monotonic() - started_monotonic))
